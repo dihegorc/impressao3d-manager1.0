@@ -25,7 +25,8 @@ function buildFilamentName(material: string, color: string, brand: string) {
   const c = color.trim();
   const b = brand.trim();
 
-  // se não tiver marca, fica sem o último bloco
+  // Agora que marca é obrigatória, a lógica fica mais simples,
+  // mas mantemos a verificação caso algo passe vazio.
   return b ? `${t} - ${c} - ${b}` : `${t} - ${c}`;
 }
 
@@ -46,9 +47,9 @@ export function FilamentFormScreen() {
   const [weightInitial, setWeightInitial] = useState("");
   const [weightCurrent, setWeightCurrent] = useState("");
   const [cost, setCost] = useState("");
-  const [priceBRL, setPriceBRL] = useState("");
-  const [spoolQty, setSpoolQty] = useState("1"); // quantidade de carretéis
-  const [unitWeight, setUnitWeight] = useState("1000"); // peso unitário em gramas
+  const [priceBRL, setPriceBRL] = useState(""); // Campo aparentemente não usado no form, mas mantido do original
+  const [spoolQty, setSpoolQty] = useState("1");
+  const [unitWeight, setUnitWeight] = useState("1000");
 
   const generatedName = useMemo(
     () => buildFilamentName(material, color, brand),
@@ -69,10 +70,14 @@ export function FilamentFormScreen() {
     setBrand(prefill.brand ?? "");
   }, [id, prefill]);
 
+  // --- NOVA FUNÇÃO DE VALIDAÇÃO ---
   function validate() {
     if (!color.trim()) return "Informe a cor.";
 
-    // se for novo: valida quantidade e peso unitário
+    // NOVA VALIDAÇÃO: Marca Obrigatória
+    if (!brand.trim()) return "Informe a marca do filamento.";
+
+    // Validações de Peso e Quantidade
     if (!id) {
       const qty = toNumber(spoolQty);
       const uw = toNumber(unitWeight);
@@ -83,7 +88,6 @@ export function FilamentFormScreen() {
         return "Quantidade de carretéis deve ser um número inteiro.";
       if (!Number.isFinite(uw) || uw <= 0) return "Peso unitário inválido.";
     } else {
-      // se for edição: valida peso inicial/atual
       const wi = toNumber(weightInitial);
       const wc = toNumber(weightCurrent);
       if (!Number.isFinite(wi) || wi <= 0) return "Peso inicial inválido.";
@@ -91,9 +95,10 @@ export function FilamentFormScreen() {
       if (wc > wi) return "Peso atual não pode ser maior que o peso inicial.";
     }
 
-    if (cost.trim()) {
-      const c = toNumber(cost);
-      if (!Number.isFinite(c) || c < 0) return "Custo inválido.";
+    // NOVA VALIDAÇÃO: Custo Obrigatório
+    const c = toNumber(cost);
+    if (!cost.trim() || !Number.isFinite(c) || c <= 0) {
+      return "Informe um custo válido (maior que zero).";
     }
 
     return null;
@@ -102,40 +107,25 @@ export function FilamentFormScreen() {
   async function onSave() {
     if (saving) return;
 
-    console.log("onSave iniciou");
+    // 1. Executa validação antes de qualquer coisa
+    const err = validate();
+    if (err) {
+      Alert.alert("Atenção", err);
+      return;
+    }
+
     setSaving(true);
 
     try {
-      const err = validate();
-      console.log("validate:", err);
-
-      if (err) {
-        Alert.alert("Validação", err);
-        return;
-      }
-
       const now = new Date().toISOString();
       const c = toNumber(cost);
-      if (!Number.isFinite(c) || c <= 0)
-        return "Informe o custo (obrigatório).";
 
-      console.log(
-        "id:",
-        id,
-        "material:",
-        material,
-        "color:",
-        color,
-        "brand:",
-        brand,
-      );
+      // Como passou na validação, brand e cost têm valores válidos
 
       // ✅ EDIÇÃO
       if (id) {
         const wi = toNumber(weightInitial);
         const wc = toNumber(weightCurrent);
-
-        console.log("edit payload:", { wi, wc });
 
         const existing = await FilamentRepository.getById(id);
         await FilamentRepository.upsert({
@@ -143,7 +133,7 @@ export function FilamentFormScreen() {
           name: generatedName,
           material,
           color: color.trim(),
-          brand: brand.trim() || undefined,
+          brand: brand.trim(), // Agora garantimos que não é undefined
           weightInitialG: wi,
           weightCurrentG: wc,
           cost: c,
@@ -151,7 +141,6 @@ export function FilamentFormScreen() {
           updatedAt: now,
         });
 
-        console.log("edit salvou, voltando");
         navigation.goBack();
         return;
       }
@@ -159,8 +148,6 @@ export function FilamentFormScreen() {
       // ✅ NOVO (múltiplos carretéis)
       const qty = Math.trunc(toNumber(spoolQty));
       const uw = toNumber(unitWeight);
-
-      console.log("create payload:", { qty, uw });
 
       for (let i = 0; i < qty; i++) {
         const newId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -170,7 +157,7 @@ export function FilamentFormScreen() {
           name: generatedName,
           material,
           color: color.trim(),
-          brand: brand.trim() || undefined,
+          brand: brand.trim(),
           weightInitialG: uw,
           weightCurrentG: uw,
           cost: c,
@@ -179,7 +166,6 @@ export function FilamentFormScreen() {
         });
       }
 
-      console.log("create salvou, voltando");
       navigation.goBack();
     } catch (e: any) {
       console.error("ERRO no onSave:", e);
@@ -223,11 +209,12 @@ export function FilamentFormScreen() {
               placeholder="Ex: Branco"
             />
 
+            {/* ATUALIZADO: Label sem "(opcional)" */}
             <AppInput
-              label="Marca (opcional)"
+              label="Marca"
               value={brand}
               onChangeText={setBrand}
-              placeholder="Ex: Bambu / Voolt / etc"
+              placeholder="Ex: Bambu / Voolt"
             />
 
             <View style={styles.section}>
@@ -314,8 +301,9 @@ export function FilamentFormScreen() {
               </Text>
             ) : null}
 
+            {/* ATUALIZADO: Label sem "(opcional)" */}
             <AppInput
-              label="Custo (opcional)"
+              label="Custo (R$)"
               value={cost}
               onChangeText={setCost}
               keyboardType="numeric"
@@ -323,13 +311,7 @@ export function FilamentFormScreen() {
             />
 
             <View style={styles.footer}>
-              <AppButton
-                title="Salvar"
-                onPress={() => {
-                  console.log("CLICOU EM SALVAR");
-                  onSave();
-                }}
-              />
+              <AppButton title="Salvar" onPress={onSave} />
             </View>
           </View>
         </View>
