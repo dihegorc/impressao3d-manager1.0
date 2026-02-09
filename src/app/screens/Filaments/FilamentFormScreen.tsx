@@ -46,6 +46,7 @@ export function FilamentFormScreen() {
   const [weightInitial, setWeightInitial] = useState("");
   const [weightCurrent, setWeightCurrent] = useState("");
   const [cost, setCost] = useState("");
+  const [priceBRL, setPriceBRL] = useState("");
   const [spoolQty, setSpoolQty] = useState("1"); // quantidade de carretéis
   const [unitWeight, setUnitWeight] = useState("1000"); // peso unitário em gramas
 
@@ -114,7 +115,9 @@ export function FilamentFormScreen() {
       }
 
       const now = new Date().toISOString();
-      const c = cost.trim() ? toNumber(cost) : undefined;
+      const c = toNumber(cost);
+      if (!Number.isFinite(c) || c <= 0)
+        return "Informe o custo (obrigatório).";
 
       console.log(
         "id:",

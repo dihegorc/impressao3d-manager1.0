@@ -5,6 +5,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useTheme } from "../../ui/theme/ThemeContext";
 import { SmallActionButton } from "../../ui/components/SmallActionButton";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { applyFilamentConsumption } from "./handlers/applyFilamentConsumption";
 
 import type { FilamentsStackParamList } from "../../navigation/types";
 import { Screen } from "../../ui/components/Screen";
@@ -15,8 +16,6 @@ import { FilamentRepository } from "../../domain/repositories/FilamentRepository
 import { FilamentUsageRepository } from "../../domain/repositories/FilamentUsageRepository";
 import { uid } from "../../core/utils/uuid";
 import { Filament } from "../../domain/models/Filament";
-import { MaterialIcons } from "@expo/vector-icons";
-import { SafeAreaView } from "react-native-safe-area-context";
 
 type R = RouteProp<FilamentsStackParamList, "FilamentConsumption">;
 type Nav = NativeStackNavigationProp<FilamentsStackParamList>;
@@ -66,6 +65,15 @@ export function FilamentConsumptionScreen() {
     setSpools(groupSpools);
 
     const h = await FilamentUsageRepository.listByGroup(groupKey);
+    console.log(
+      "FilamentConsumptionScreen.load -> groupKey:",
+      groupKey,
+      "spools:",
+      groupSpools.length,
+      "history:",
+      h.length,
+      h[0],
+    );
     setHistory(h);
   }
 
@@ -92,88 +100,43 @@ export function FilamentConsumptionScreen() {
   }
 
   async function applyConsumption() {
-    const g = toNumber(grams);
-    if (!Number.isFinite(g) || g <= 0) {
-      Alert.alert("Validação", "Informe um consumo válido em gramas.");
-      return;
-    }
+    return applyFilamentConsumption({
+      groupKey,
+      spools,
+      grams,
+      note,
+      setSpools,
+      setHistory,
+      setShowHistory,
+      setGrams,
+      setNote,
+      load,
+      navigation,
+    });
+  }
 
-    const totalAvailable = spools.reduce((s, f) => s + f.weightCurrentG, 0);
-    if (g > totalAvailable) {
-      Alert.alert(
-        "Sem saldo",
-        `Consumo maior que o disponível. Disponível: ${totalAvailable}g.`,
-      );
-      return;
-    }
+  function parseGroupKey(groupKey: string) {
+    const [materialRaw, colorRaw, brandRaw] = (groupKey ?? "").split("|");
+    return {
+      material: (materialRaw ?? "PLA").toUpperCase(),
+      color: (colorRaw ?? "").trim(),
+      brand: (brandRaw ?? "").trim(),
+    };
+  }
 
-    Alert.alert(
-      "Confirmar consumo",
-      `Descontar ${g}g do estoque deste grupo?`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Confirmar",
-          onPress: async () => {
-            // Consumo FIFO: percorre carretéis e vai baixando
-            let remaining = g;
-            const now = new Date().toISOString();
+  function onAddSpoolToGroup() {
+    const base = spools[0];
+    const parsed = parseGroupKey(groupKey);
 
-            for (const spool of spools) {
-              if (remaining <= 0) break;
-              const canTake = Math.min(spool.weightCurrentG, remaining);
-              const newWeight = spool.weightCurrentG - canTake;
+    const prefill = {
+      material: (base?.material ?? (parsed.material as any)) as any,
+      color: base?.color ?? parsed.color,
+      brand: base?.brand ?? parsed.brand,
+    };
 
-              if (newWeight <= 0) {
-                // ✅ chegou a 0g: remove do estoque
-                await FilamentRepository.remove(spool.id);
-              } else {
-                const updated: Filament = {
-                  ...spool,
-                  weightCurrentG: newWeight,
-                  updatedAt: now,
-                };
-                await FilamentRepository.upsert(updated);
-              }
-
-              remaining -= canTake;
-            }
-
-            // salva histórico
-            await FilamentUsageRepository.add({
-              id: uid(),
-              groupKey,
-              gramsUsed: g,
-              note: note.trim() || undefined,
-              createdAt: now,
-            });
-
-            await load();
-
-            Alert.alert(
-              "Consumo registrado",
-              "Deseja registrar outro consumo?",
-              [
-                {
-                  text: "Sim",
-                  onPress: () => {
-                    setGrams("");
-                    setNote("");
-                    // fica na tela
-                  },
-                },
-                {
-                  text: "Não",
-                  style: "cancel",
-                  onPress: () => {
-                    navigation.popToTop(); // volta para FilamentsList
-                  },
-                },
-              ],
-            );
-          },
-        },
-      ],
+    navigation.navigate(
+      "FilamentForm" as any,
+      { prefill, lockPrefill: true } as any,
     );
   }
 
@@ -217,6 +180,13 @@ export function FilamentConsumptionScreen() {
 
         <View style={{ marginTop: 6 }}>
           <AppButton title="Aplicar consumo" onPress={applyConsumption} />
+        </View>
+
+        <View style={{ marginTop: 10 }}>
+          <AppButton
+            title="Adicionar filamento deste grupo"
+            onPress={onAddSpoolToGroup}
+          />
         </View>
 
         <View style={styles.sectionHeader}>
@@ -345,7 +315,7 @@ export function FilamentConsumptionScreen() {
         ) : (
           <Text style={{ color: colors.textSecondary }}>
             Últimos consumos:{" "}
-            {history.slice(0, 1).length ? `-${history[0].gramsUsed}g` : "—"}
+            {history.length ? `-${history[0]?.gramsUsed ?? "—"}g` : "—"}
           </Text>
         )}
       </View>

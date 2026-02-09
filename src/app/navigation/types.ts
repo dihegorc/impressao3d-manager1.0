@@ -17,6 +17,7 @@ export type FilamentsStackParamList = {
           brand?: string;
           priceBRL?: number;
         };
+        lockPrefill?: boolean;
       }
     | undefined;
   FilamentConsumption: { groupKey: string };

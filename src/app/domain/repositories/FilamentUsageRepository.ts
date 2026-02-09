@@ -17,8 +17,15 @@ export const FilamentUsageRepository = {
   },
 
   async add(item: FilamentUsage): Promise<void> {
-    const all = await this.list();
-    all.unshift(item);
-    await setJSON(STORAGE_KEYS.FILAMENT_USAGE, all);
+    try {
+      console.log("FilamentUsageRepository.add -> item:", item);
+      const all = await this.list();
+      all.unshift(item);
+      await setJSON(STORAGE_KEYS.FILAMENT_USAGE, all);
+      console.log("FilamentUsageRepository.add -> saved. total:", all.length);
+    } catch (error) {
+      console.error("Erro ao registrar consumo:", error);
+      throw new Error("Falha ao registrar consumo.");
+    }
   },
 };
