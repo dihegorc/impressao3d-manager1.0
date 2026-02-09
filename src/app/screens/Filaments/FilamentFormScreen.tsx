@@ -1,5 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, StyleSheet, Text, View, ScrollView } from "react-native";
+import {
+  Alert,
+  StyleSheet,
+  Text,
+  View,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+} from "react-native";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
@@ -24,9 +32,6 @@ function buildFilamentName(material: string, color: string, brand: string) {
   const t = material.trim();
   const c = color.trim();
   const b = brand.trim();
-
-  // Agora que marca é obrigatória, a lógica fica mais simples,
-  // mas mantemos a verificação caso algo passe vazio.
   return b ? `${t} - ${c} - ${b}` : `${t} - ${c}`;
 }
 
@@ -47,7 +52,6 @@ export function FilamentFormScreen() {
   const [weightInitial, setWeightInitial] = useState("");
   const [weightCurrent, setWeightCurrent] = useState("");
   const [cost, setCost] = useState("");
-  const [priceBRL, setPriceBRL] = useState(""); // Campo aparentemente não usado no form, mas mantido do original
   const [spoolQty, setSpoolQty] = useState("1");
   const [unitWeight, setUnitWeight] = useState("1000");
 
@@ -70,14 +74,10 @@ export function FilamentFormScreen() {
     setBrand(prefill.brand ?? "");
   }, [id, prefill]);
 
-  // --- NOVA FUNÇÃO DE VALIDAÇÃO ---
   function validate() {
     if (!color.trim()) return "Informe a cor.";
-
-    // NOVA VALIDAÇÃO: Marca Obrigatória
     if (!brand.trim()) return "Informe a marca do filamento.";
 
-    // Validações de Peso e Quantidade
     if (!id) {
       const qty = toNumber(spoolQty);
       const uw = toNumber(unitWeight);
@@ -95,7 +95,6 @@ export function FilamentFormScreen() {
       if (wc > wi) return "Peso atual não pode ser maior que o peso inicial.";
     }
 
-    // NOVA VALIDAÇÃO: Custo Obrigatório
     const c = toNumber(cost);
     if (!cost.trim() || !Number.isFinite(c) || c <= 0) {
       return "Informe um custo válido (maior que zero).";
@@ -107,7 +106,6 @@ export function FilamentFormScreen() {
   async function onSave() {
     if (saving) return;
 
-    // 1. Executa validação antes de qualquer coisa
     const err = validate();
     if (err) {
       Alert.alert("Atenção", err);
@@ -120,20 +118,17 @@ export function FilamentFormScreen() {
       const now = new Date().toISOString();
       const c = toNumber(cost);
 
-      // Como passou na validação, brand e cost têm valores válidos
-
-      // ✅ EDIÇÃO
       if (id) {
         const wi = toNumber(weightInitial);
         const wc = toNumber(weightCurrent);
-
         const existing = await FilamentRepository.getById(id);
+
         await FilamentRepository.upsert({
           id,
           name: generatedName,
           material,
           color: color.trim(),
-          brand: brand.trim(), // Agora garantimos que não é undefined
+          brand: brand.trim(),
           weightInitialG: wi,
           weightCurrentG: wc,
           cost: c,
@@ -145,13 +140,11 @@ export function FilamentFormScreen() {
         return;
       }
 
-      // ✅ NOVO (múltiplos carretéis)
       const qty = Math.trunc(toNumber(spoolQty));
       const uw = toNumber(unitWeight);
 
       for (let i = 0; i < qty; i++) {
         const newId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
         await FilamentRepository.upsert({
           id: newId,
           name: generatedName,
@@ -181,141 +174,142 @@ export function FilamentFormScreen() {
 
   return (
     <Screen>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{
-          padding: 16,
-          paddingBottom: tabBarHeight + 24,
-          gap: 12,
-        }}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1 }}
       >
-        <View style={styles.page}>
-          <Text style={styles.h1}>
-            {isEdit ? "Editar Filamento" : "Novo Filamento"}
-          </Text>
-
-          <View style={styles.preview}>
-            <Text style={styles.previewLabel}>
-              Nome do filamento (automático)
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: tabBarHeight + 24,
+            gap: 12,
+          }}
+        >
+          <View style={styles.page}>
+            <Text style={styles.h1}>
+              {isEdit ? "Editar Filamento" : "Novo Filamento"}
             </Text>
-            <Text style={styles.previewValue}>{generatedName}</Text>
-          </View>
 
-          <View style={styles.form}>
-            <AppInput
-              label="Cor"
-              value={color}
-              onChangeText={setColor}
-              placeholder="Ex: Branco"
-            />
-
-            {/* ATUALIZADO: Label sem "(opcional)" */}
-            <AppInput
-              label="Marca"
-              value={brand}
-              onChangeText={setBrand}
-              placeholder="Ex: Bambu / Voolt"
-            />
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Tipo de filamento</Text>
-
-              <View style={styles.row}>
-                {(
-                  [
-                    "PLA",
-                    "ABS",
-                    "PETG",
-                    "TPU",
-                    "RESINA",
-                    "OUTRO",
-                  ] as FilamentMaterial[]
-                ).map((m) => (
-                  <AppButton
-                    key={m}
-                    title={m}
-                    variant={material === m ? "primary" : "ghost"}
-                    onPress={() => onChangeMaterialQuick(m)}
-                    style={styles.chip}
-                  />
-                ))}
-              </View>
-            </View>
-
-            {!id ? (
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Qtd. de carretéis"
-                    value={spoolQty}
-                    onChangeText={setSpoolQty}
-                    keyboardType="numeric"
-                    placeholder="Ex: 3"
-                  />
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Peso unitário (g)"
-                    value={unitWeight}
-                    onChangeText={setUnitWeight}
-                    keyboardType="numeric"
-                    placeholder="Ex: 1000"
-                  />
-                </View>
-              </View>
-            ) : (
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Peso inicial (g)"
-                    value={weightInitial}
-                    onChangeText={setWeightInitial}
-                    keyboardType="numeric"
-                    placeholder="Ex: 1000"
-                  />
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Peso atual (g)"
-                    value={weightCurrent}
-                    onChangeText={setWeightCurrent}
-                    keyboardType="numeric"
-                    placeholder="Ex: 850"
-                  />
-                </View>
-              </View>
-            )}
-
-            {!id ? (
-              <Text style={styles.totalHint}>
-                Total estimado:{" "}
-                {(() => {
-                  const qty = toNumber(spoolQty);
-                  const uw = toNumber(unitWeight);
-                  if (!Number.isFinite(qty) || !Number.isFinite(uw)) return "—";
-                  const totalG = qty * uw;
-                  return `${(totalG / 1000).toFixed(3).replace(".", ",")} kg`;
-                })()}
+            <View style={styles.preview}>
+              <Text style={styles.previewLabel}>
+                Nome do filamento (automático)
               </Text>
-            ) : null}
+              <Text style={styles.previewValue}>{generatedName}</Text>
+            </View>
 
-            {/* ATUALIZADO: Label sem "(opcional)" */}
-            <AppInput
-              label="Custo (R$)"
-              value={cost}
-              onChangeText={setCost}
-              keyboardType="numeric"
-              placeholder="Ex: 120"
-            />
+            <View style={styles.form}>
+              <AppInput
+                label="Cor"
+                value={color}
+                onChangeText={setColor}
+                placeholder="Ex: Branco"
+              />
 
-            <View style={styles.footer}>
-              <AppButton title="Salvar" onPress={onSave} />
+              <AppInput
+                label="Marca"
+                value={brand}
+                onChangeText={setBrand}
+                placeholder="Ex: Bambu / Voolt"
+              />
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Tipo de filamento</Text>
+                <View style={styles.row}>
+                  {(
+                    [
+                      "PLA",
+                      "ABS",
+                      "PETG",
+                      "TPU",
+                      "RESINA",
+                      "OUTRO",
+                    ] as FilamentMaterial[]
+                  ).map((m) => (
+                    <AppButton
+                      key={m}
+                      title={m}
+                      variant={material === m ? "primary" : "ghost"}
+                      onPress={() => onChangeMaterialQuick(m)}
+                      style={styles.chip}
+                    />
+                  ))}
+                </View>
+              </View>
+
+              {!id ? (
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Qtd. de carretéis"
+                      value={spoolQty}
+                      onChangeText={setSpoolQty}
+                      keyboardType="numeric"
+                      placeholder="Ex: 3"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Peso unitário (g)"
+                      value={unitWeight}
+                      onChangeText={setUnitWeight}
+                      keyboardType="numeric"
+                      placeholder="Ex: 1000"
+                    />
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Peso inicial (g)"
+                      value={weightInitial}
+                      onChangeText={setWeightInitial}
+                      keyboardType="numeric"
+                      placeholder="Ex: 1000"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Peso atual (g)"
+                      value={weightCurrent}
+                      onChangeText={setWeightCurrent}
+                      keyboardType="numeric"
+                      placeholder="Ex: 850"
+                    />
+                  </View>
+                </View>
+              )}
+
+              {!id ? (
+                <Text style={styles.totalHint}>
+                  Total estimado:{" "}
+                  {(() => {
+                    const qty = toNumber(spoolQty);
+                    const uw = toNumber(unitWeight);
+                    if (!Number.isFinite(qty) || !Number.isFinite(uw))
+                      return "—";
+                    const totalG = qty * uw;
+                    return `${(totalG / 1000).toFixed(3).replace(".", ",")} kg`;
+                  })()}
+                </Text>
+              ) : null}
+
+              <AppInput
+                label="Custo (R$)"
+                value={cost}
+                onChangeText={setCost}
+                keyboardType="numeric"
+                placeholder="Ex: 120"
+              />
+
+              <View style={styles.footer}>
+                <AppButton title="Salvar" onPress={onSave} />
+              </View>
             </View>
           </View>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }

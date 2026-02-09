@@ -8,6 +8,8 @@ import {
   Text,
   View,
   Image,
+  KeyboardAvoidingView, // Adicionado para melhor UX
+  Platform, // Adicionado
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
@@ -66,6 +68,7 @@ export function ProductFormScreen() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [price, setPrice] = useState(""); // ✅ Novo estado para Preço
 
   const [filaments, setFilaments] = useState<ProductFilament[]>([]);
   const [accessories, setAccessories] = useState<ProductAccessory[]>([]);
@@ -81,8 +84,8 @@ export function ProductFormScreen() {
   const [fMaterial, setFMaterial] = useState("PLA");
   const [fColor, setFColor] = useState("");
   const [fBrand, setFBrand] = useState("");
-  const [fGrams, setFGrams] = useState(""); // ✅ vazio
-  const [fPlateMin, setFPlateMin] = useState(""); // ✅ vazio
+  const [fGrams, setFGrams] = useState("");
+  const [fPlateMin, setFPlateMin] = useState("");
 
   // Acessórios
   const [accName, setAccName] = useState("");
@@ -110,6 +113,7 @@ export function ProductFormScreen() {
 
       setName(p.name ?? "");
       setDescription((p as any).description ?? "");
+      setPrice(p.priceBRL ? String(p.priceBRL) : ""); // ✅ Carrega preço
       setPhotoUri((p as any).photoUri);
 
       const loadedFilaments = ((p as any).filaments ?? []).map((x: any) => ({
@@ -229,7 +233,7 @@ export function ProductFormScreen() {
       Number.isFinite(grams) &&
       grams > 0 &&
       Number.isFinite(plate) &&
-      plate > 0 // ✅ não pode ser 0
+      plate > 0
     );
   }, [fMaterial, fColor, fGrams, fPlateMin]);
 
@@ -255,7 +259,6 @@ export function ProductFormScreen() {
 
     setFilaments((prev) => [...prev, item]);
 
-    // limpa campos numéricos (sem voltar pra 0)
     setFColor("");
     setFBrand("");
     setFGrams("");
@@ -302,11 +305,13 @@ export function ProductFormScreen() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
+      const pPrice = toNumber(price); // ✅ Converte preço
 
       const base: any = {
         id: id ?? uid(),
         name: name.trim(),
         description: description.trim() || undefined,
+        priceBRL: Number.isFinite(pPrice) ? pPrice : 0, // ✅ Salva preço
         filaments: (filaments ?? []).map((f: any) => ({
           ...f,
           plateMinutes: f.plateMinutes ?? 0,
@@ -349,55 +354,42 @@ export function ProductFormScreen() {
     }
   }
 
+  // ... (Funções de Foto permanecem iguais: getAppDir, persistOrFallback, pickPhoto)
   function getAppDir(): string | null {
-    // Em runtime, essas props podem retornar null em alguns ambientes.
-    // Usamos "as any" porque seu TS reclamou antes de typings inconsistentes.
     const doc = (FileSystem as any).documentDirectory ?? null;
     const cache = (FileSystem as any).cacheDirectory ?? null;
     return doc ?? cache ?? null;
   }
 
   async function persistOrFallback(uri: string): Promise<string> {
-    // ✅ Se não tiver diretório, não trava: usa o URI original
     const appDir = getAppDir();
     if (!appDir) return uri;
-
     try {
       const ext = uri.split(".").pop() || "jpg";
       const filename = `product_${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
       const dest = `${appDir}${filename}`;
-
       await FileSystem.copyAsync({ from: uri, to: dest });
       return dest;
     } catch (e) {
-      // ✅ Se falhar copiar, também não trava: usa URI original
       return uri;
     }
   }
 
   async function pickPhoto(source: "camera" | "gallery") {
     try {
-      // ✅ pedir permissão automaticamente (sem alerta extra)
       if (source === "gallery") {
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (perm.status !== ImagePicker.PermissionStatus.GRANTED) {
-          Alert.alert(
-            "Permissão necessária",
-            "Para escolher uma foto, permita o acesso às fotos/arquivos nas permissões do app.",
-          );
+          Alert.alert("Permissão necessária", "Permita acesso à galeria.");
           return;
         }
       } else {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (perm.status !== ImagePicker.PermissionStatus.GRANTED) {
-          Alert.alert(
-            "Permissão necessária",
-            "Para tirar foto, permita o acesso à câmera nas permissões do app.",
-          );
+          Alert.alert("Permissão necessária", "Permita acesso à câmera.");
           return;
         }
       }
-
       const result =
         source === "gallery"
           ? await ImagePicker.launchImageLibraryAsync({
@@ -413,297 +405,456 @@ export function ProductFormScreen() {
             });
 
       if (result.canceled) return;
-
       const uri = result.assets?.[0]?.uri;
       if (!uri) return;
-
-      // ✅ tenta copiar; se não der, usa o URI original
       const finalUri = await persistOrFallback(uri);
       return finalUri;
     } catch (e: any) {
-      console.error(e);
-      Alert.alert("Erro", e?.message ?? "Não foi possível obter a foto.");
+      Alert.alert("Erro", e?.message ?? "Erro na foto.");
     }
   }
 
   return (
     <Screen contentStyle={{ padding: 0 }}>
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{
-          padding: 16,
-          paddingBottom: tabBarHeight + 28,
-          gap: 14,
-        }}
+      {/* Adicionado KeyboardAvoidingView para evitar que o teclado cubra os campos */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1 }}
       >
-        <Text style={[styles.h1, { color: colors.textPrimary }]}>
-          {isEdit ? "Editar Produto" : "Novo Produto"}
-        </Text>
-
-        <AppInput
-          label="Nome"
-          value={name}
-          onChangeText={setName}
-          placeholder="Ex: Chaveiro Capivara"
-        />
-
-        <AppInput
-          label="Descrição (opcional)"
-          value={description}
-          onChangeText={setDescription}
-          placeholder="Detalhes, tamanho, acabamento..."
-        />
-
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: tabBarHeight + 28,
+            gap: 14,
+          }}
         >
-          <Text style={[styles.h2, { color: colors.textPrimary }]}>
-            Foto do produto
+          <Text style={[styles.h1, { color: colors.textPrimary }]}>
+            {isEdit ? "Editar Produto" : "Novo Produto"}
           </Text>
 
+          <AppInput
+            label="Nome"
+            value={name}
+            onChangeText={setName}
+            placeholder="Ex: Chaveiro Capivara"
+          />
+
+          {/* ✅ NOVO CAMPO DE PREÇO */}
+          <View style={{ width: "50%" }}>
+            <AppInput
+              label="Preço de Venda (R$)"
+              value={price}
+              onChangeText={setPrice}
+              keyboardType="numeric"
+              placeholder="Ex: 35.00"
+            />
+          </View>
+
+          <AppInput
+            label="Descrição (opcional)"
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Detalhes, tamanho, acabamento..."
+          />
+
           <View
-            style={{
-              marginTop: 12,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 12,
-            }}
+            style={[
+              styles.sectionCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
           >
+            <Text style={[styles.h2, { color: colors.textPrimary }]}>
+              Foto do produto
+            </Text>
+
             <View
               style={{
-                width: 72,
-                height: 72,
-                borderRadius: 16,
-                overflow: "hidden",
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: colors.iconBg,
+                marginTop: 12,
+                flexDirection: "row",
                 alignItems: "center",
-                justifyContent: "center",
+                gap: 12,
               }}
             >
-              {photoUri ? (
-                <Image
-                  source={{ uri: photoUri }}
-                  style={{ width: "100%", height: "100%" }}
-                />
-              ) : (
-                <MaterialIcons
-                  name="image"
-                  size={26}
-                  color={colors.textSecondary}
-                />
-              )}
-            </View>
-
-            <View style={{ flex: 1, gap: 8 }}>
-              <AppButton
-                title="Tirar foto"
-                onPress={async () => {
-                  const uri = await pickPhoto("camera");
-                  if (uri) setPhotoUri(uri);
-                }}
-              />
-
-              <AppButton
-                title="Escolher da galeria"
-                onPress={async () => {
-                  const uri = await pickPhoto("gallery");
-                  if (uri) setPhotoUri(uri);
-                }}
-              />
-
-              {photoUri ? (
-                <AppButton
-                  title="Remover foto"
-                  variant="ghost"
-                  onPress={() => setPhotoUri(undefined)}
-                />
-              ) : null}
-            </View>
-          </View>
-        </View>
-
-        {/* ===== Receita (expandível) ===== */}
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Pressable
-            onPress={() => setRecipeExpanded((v) => !v)}
-            style={styles.sectionHeader}
-            hitSlop={10}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.h2, { color: colors.textPrimary }]}>
-                Receita por filamento (por unidade)
-              </Text>
-              <Text
+              <View
                 style={{
-                  color: colors.textSecondary,
-                  fontWeight: "800",
-                  marginTop: 4,
+                  width: 72,
+                  height: 72,
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  backgroundColor: colors.iconBg,
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
               >
-                {filaments.length} item(ns) • Total Plate: {totalPlateMinutes}{" "}
-                min
-              </Text>
+                {photoUri ? (
+                  <Image
+                    source={{ uri: photoUri }}
+                    style={{ width: "100%", height: "100%" }}
+                  />
+                ) : (
+                  <MaterialIcons
+                    name="image"
+                    size={26}
+                    color={colors.textSecondary}
+                  />
+                )}
+              </View>
+
+              <View style={{ flex: 1, gap: 8 }}>
+                <AppButton
+                  title="Tirar foto"
+                  onPress={async () => {
+                    const uri = await pickPhoto("camera");
+                    if (uri) setPhotoUri(uri);
+                  }}
+                />
+
+                <AppButton
+                  title="Escolher da galeria"
+                  onPress={async () => {
+                    const uri = await pickPhoto("gallery");
+                    if (uri) setPhotoUri(uri);
+                  }}
+                />
+
+                {photoUri ? (
+                  <AppButton
+                    title="Remover foto"
+                    variant="ghost"
+                    onPress={() => setPhotoUri(undefined)}
+                  />
+                ) : null}
+              </View>
             </View>
-            <MaterialIcons
-              name={recipeExpanded ? "expand-less" : "expand-more"}
-              size={26}
-              color={colors.textPrimary}
-            />
-          </Pressable>
+          </View>
 
-          {recipeExpanded ? (
-            <View style={{ gap: 12, marginTop: 12 }}>
-              {/* dropdowns */}
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>
-                    Tipo de filamento
-                  </Text>
-                  <Pressable
-                    onPress={() => openPicker("material")}
-                    style={[
-                      styles.dropdown,
-                      {
-                        borderColor: colors.border,
-                        backgroundColor: colors.iconBg,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownText,
-                        { color: colors.textPrimary },
-                      ]}
-                    >
-                      {norm(fMaterial) ? fMaterial : "Selecionar"}
-                    </Text>
-                    <MaterialIcons
-                      name="expand-more"
-                      size={20}
-                      color={colors.textPrimary}
-                    />
-                  </Pressable>
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>
-                    Cor
-                  </Text>
-                  <Pressable
-                    onPress={() => openPicker("color")}
-                    style={[
-                      styles.dropdown,
-                      {
-                        borderColor: colors.border,
-                        backgroundColor: colors.iconBg,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownText,
-                        { color: colors.textPrimary },
-                      ]}
-                    >
-                      {norm(fColor) ? fColor : "Selecionar"}
-                    </Text>
-                    <MaterialIcons
-                      name="expand-more"
-                      size={20}
-                      color={colors.textPrimary}
-                    />
-                  </Pressable>
-                </View>
-              </View>
-
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>
-                    Marca (opcional)
-                  </Text>
-                  <Pressable
-                    onPress={() => openPicker("brand")}
-                    style={[
-                      styles.dropdown,
-                      {
-                        borderColor: colors.border,
-                        backgroundColor: colors.iconBg,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownText,
-                        { color: colors.textPrimary },
-                      ]}
-                    >
-                      {norm(fBrand) ? fBrand : "(Sem marca)"}
-                    </Text>
-                    <MaterialIcons
-                      name="expand-more"
-                      size={20}
-                      color={colors.textPrimary}
-                    />
-                  </Pressable>
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="g por unidade"
-                    value={fGrams}
-                    onChangeText={setFGrams}
-                    keyboardType="numeric"
-                    placeholder="Ex: 45"
-                  />
-                </View>
-              </View>
-
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Plate (min)"
-                    value={fPlateMin}
-                    onChangeText={setFPlateMin}
-                    keyboardType="numeric"
-                    placeholder="Ex: 90"
-                  />
-                </View>
-
-                <View style={{ flex: 1, justifyContent: "flex-end" }}>
-                  <AppButton title="Adicionar item" onPress={addFilament} />
-                </View>
-              </View>
-
-              {filaments.length === 0 ? (
+          {/* ===== Receita (expandível) ===== */}
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <Pressable
+              onPress={() => setRecipeExpanded((v) => !v)}
+              style={styles.sectionHeader}
+              hitSlop={10}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.h2, { color: colors.textPrimary }]}>
+                  Receita por filamento (por unidade)
+                </Text>
                 <Text
                   style={{
-                    marginTop: 4,
                     color: colors.textSecondary,
                     fontWeight: "800",
+                    marginTop: 4,
                   }}
                 >
-                  Plate (min) é obrigatório e deve ser maior que 0.
+                  {filaments.length} item(ns) • Total Plate: {totalPlateMinutes}{" "}
+                  min
                 </Text>
-              ) : (
-                <View style={{ gap: 10, marginTop: 8 }}>
-                  {filaments.map((r: any, idx) => {
-                    const label = r.brand
-                      ? `${r.material} - ${r.color} - ${r.brand}`
-                      : `${r.material} - ${r.color}`;
+              </View>
+              <MaterialIcons
+                name={recipeExpanded ? "expand-less" : "expand-more"}
+                size={26}
+                color={colors.textPrimary}
+              />
+            </Pressable>
 
-                    return (
+            {recipeExpanded ? (
+              <View style={{ gap: 12, marginTop: 12 }}>
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.label, { color: colors.textSecondary }]}
+                    >
+                      Tipo de filamento
+                    </Text>
+                    <Pressable
+                      onPress={() => openPicker("material")}
+                      style={[
+                        styles.dropdown,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.iconBg,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.dropdownText,
+                          { color: colors.textPrimary },
+                        ]}
+                      >
+                        {norm(fMaterial) ? fMaterial : "Selecionar"}
+                      </Text>
+                      <MaterialIcons
+                        name="expand-more"
+                        size={20}
+                        color={colors.textPrimary}
+                      />
+                    </Pressable>
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.label, { color: colors.textSecondary }]}
+                    >
+                      Cor
+                    </Text>
+                    <Pressable
+                      onPress={() => openPicker("color")}
+                      style={[
+                        styles.dropdown,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.iconBg,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.dropdownText,
+                          { color: colors.textPrimary },
+                        ]}
+                      >
+                        {norm(fColor) ? fColor : "Selecionar"}
+                      </Text>
+                      <MaterialIcons
+                        name="expand-more"
+                        size={20}
+                        color={colors.textPrimary}
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.label, { color: colors.textSecondary }]}
+                    >
+                      Marca (opcional)
+                    </Text>
+                    <Pressable
+                      onPress={() => openPicker("brand")}
+                      style={[
+                        styles.dropdown,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.iconBg,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.dropdownText,
+                          { color: colors.textPrimary },
+                        ]}
+                      >
+                        {norm(fBrand) ? fBrand : "(Sem marca)"}
+                      </Text>
+                      <MaterialIcons
+                        name="expand-more"
+                        size={20}
+                        color={colors.textPrimary}
+                      />
+                    </Pressable>
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="g por unidade"
+                      value={fGrams}
+                      onChangeText={setFGrams}
+                      keyboardType="numeric"
+                      placeholder="Ex: 45"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Plate (min)"
+                      value={fPlateMin}
+                      onChangeText={setFPlateMin}
+                      keyboardType="numeric"
+                      placeholder="Ex: 90"
+                    />
+                  </View>
+
+                  <View style={{ flex: 1, justifyContent: "flex-end" }}>
+                    <AppButton title="Adicionar item" onPress={addFilament} />
+                  </View>
+                </View>
+
+                {filaments.length === 0 ? (
+                  <Text
+                    style={{
+                      marginTop: 4,
+                      color: colors.textSecondary,
+                      fontWeight: "800",
+                    }}
+                  >
+                    Plate (min) é obrigatório e deve ser maior que 0.
+                  </Text>
+                ) : (
+                  <View style={{ gap: 10, marginTop: 8 }}>
+                    {filaments.map((r: any, idx) => {
+                      const label = r.brand
+                        ? `${r.material} - ${r.color} - ${r.brand}`
+                        : `${r.material} - ${r.color}`;
+
+                      return (
+                        <View
+                          key={`${label}-${idx}`}
+                          style={[
+                            styles.rowCard,
+                            {
+                              backgroundColor: colors.iconBg,
+                              borderColor: colors.border,
+                            },
+                          ]}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={{
+                                color: colors.textPrimary,
+                                fontWeight: "900",
+                              }}
+                              numberOfLines={1}
+                            >
+                              {label}
+                            </Text>
+                            <Text
+                              style={{
+                                color: colors.textSecondary,
+                                fontWeight: "800",
+                                marginTop: 4,
+                              }}
+                            >
+                              {r.grams}g/un • Plate: {r.plateMinutes} min
+                            </Text>
+                          </View>
+
+                          <Pressable
+                            onPress={() => removeFilament(idx)}
+                            style={[
+                              styles.iconBtn,
+                              {
+                                borderColor: colors.border,
+                                backgroundColor: colors.surface,
+                              },
+                            ]}
+                            hitSlop={10}
+                          >
+                            <MaterialIcons
+                              name="delete"
+                              size={18}
+                              color={colors.textPrimary}
+                            />
+                          </Pressable>
+                        </View>
+                      );
+                    })}
+
+                    <View
+                      style={[
+                        styles.totalBox,
+                        {
+                          backgroundColor: colors.surface,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={{ color: colors.textPrimary, fontWeight: "900" }}
+                      >
+                        Tempo total (Plate)
+                      </Text>
+                      <Text
+                        style={{
+                          color: colors.textPrimary,
+                          fontWeight: "900",
+                          fontSize: 16,
+                        }}
+                      >
+                        {totalPlateMinutes} min
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            ) : null}
+          </View>
+
+          {/* ===== Acessórios (expandível) ===== */}
+          <View
+            style={[
+              styles.sectionCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <Pressable
+              onPress={() => setAccExpanded((v) => !v)}
+              style={styles.sectionHeader}
+              hitSlop={10}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.h2, { color: colors.textPrimary }]}>
+                  Acessórios
+                </Text>
+                <Text
+                  style={{
+                    color: colors.textSecondary,
+                    fontWeight: "800",
+                    marginTop: 4,
+                  }}
+                >
+                  {accessories.length} item(ns)
+                </Text>
+              </View>
+              <MaterialIcons
+                name={accExpanded ? "expand-less" : "expand-more"}
+                size={26}
+                color={colors.textPrimary}
+              />
+            </Pressable>
+
+            {accExpanded ? (
+              <View style={{ gap: 12, marginTop: 12 }}>
+                <View style={styles.grid2}>
+                  <View style={{ flex: 1 }}>
+                    <AppInput
+                      label="Acessório"
+                      value={accName}
+                      onChangeText={setAccName}
+                      placeholder="Ex: Corrente de chaveiro"
+                    />
+                  </View>
+                  <View style={{ width: 120 }}>
+                    <AppInput
+                      label="Qtd"
+                      value={accQty}
+                      onChangeText={setAccQty}
+                      keyboardType="numeric"
+                      placeholder="1"
+                    />
+                  </View>
+                </View>
+
+                <AppButton title="Adicionar acessório" onPress={addAccessory} />
+
+                {accessories.length ? (
+                  <View style={{ gap: 10 }}>
+                    {accessories.map((a, idx) => (
                       <View
-                        key={`${label}-${idx}`}
+                        key={`${a.name}-${idx}`}
                         style={[
                           styles.rowCard,
                           {
@@ -720,7 +871,7 @@ export function ProductFormScreen() {
                             }}
                             numberOfLines={1}
                           >
-                            {label}
+                            {a.name}
                           </Text>
                           <Text
                             style={{
@@ -729,12 +880,12 @@ export function ProductFormScreen() {
                               marginTop: 4,
                             }}
                           >
-                            {r.grams}g/un • Plate: {r.plateMinutes} min
+                            Quantidade: {a.quantity}
                           </Text>
                         </View>
 
                         <Pressable
-                          onPress={() => removeFilament(idx)}
+                          onPress={() => removeAccessory(idx)}
                           style={[
                             styles.iconBtn,
                             {
@@ -751,167 +902,26 @@ export function ProductFormScreen() {
                           />
                         </Pressable>
                       </View>
-                    );
-                  })}
-
-                  <View
-                    style={[
-                      styles.totalBox,
-                      {
-                        backgroundColor: colors.surface,
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={{ color: colors.textPrimary, fontWeight: "900" }}
-                    >
-                      Tempo total (Plate)
-                    </Text>
-                    <Text
-                      style={{
-                        color: colors.textPrimary,
-                        fontWeight: "900",
-                        fontSize: 16,
-                      }}
-                    >
-                      {totalPlateMinutes} min
-                    </Text>
+                    ))}
                   </View>
-                </View>
-              )}
-            </View>
-          ) : null}
-        </View>
-
-        {/* ===== Acessórios (expandível) ===== */}
-        <View
-          style={[
-            styles.sectionCard,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Pressable
-            onPress={() => setAccExpanded((v) => !v)}
-            style={styles.sectionHeader}
-            hitSlop={10}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.h2, { color: colors.textPrimary }]}>
-                Acessórios
-              </Text>
-              <Text
-                style={{
-                  color: colors.textSecondary,
-                  fontWeight: "800",
-                  marginTop: 4,
-                }}
-              >
-                {accessories.length} item(ns)
-              </Text>
-            </View>
-            <MaterialIcons
-              name={accExpanded ? "expand-less" : "expand-more"}
-              size={26}
-              color={colors.textPrimary}
-            />
-          </Pressable>
-
-          {accExpanded ? (
-            <View style={{ gap: 12, marginTop: 12 }}>
-              <View style={styles.grid2}>
-                <View style={{ flex: 1 }}>
-                  <AppInput
-                    label="Acessório"
-                    value={accName}
-                    onChangeText={setAccName}
-                    placeholder="Ex: Corrente de chaveiro"
-                  />
-                </View>
-                <View style={{ width: 120 }}>
-                  <AppInput
-                    label="Qtd"
-                    value={accQty}
-                    onChangeText={setAccQty}
-                    keyboardType="numeric"
-                    placeholder="1"
-                  />
-                </View>
+                ) : (
+                  <Text
+                    style={{ color: colors.textSecondary, fontWeight: "800" }}
+                  >
+                    Ex.: corrente de chaveiro, argola, ímã, fita dupla-face…
+                  </Text>
+                )}
               </View>
+            ) : null}
+          </View>
 
-              <AppButton title="Adicionar acessório" onPress={addAccessory} />
-
-              {accessories.length ? (
-                <View style={{ gap: 10 }}>
-                  {accessories.map((a, idx) => (
-                    <View
-                      key={`${a.name}-${idx}`}
-                      style={[
-                        styles.rowCard,
-                        {
-                          backgroundColor: colors.iconBg,
-                          borderColor: colors.border,
-                        },
-                      ]}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={{
-                            color: colors.textPrimary,
-                            fontWeight: "900",
-                          }}
-                          numberOfLines={1}
-                        >
-                          {a.name}
-                        </Text>
-                        <Text
-                          style={{
-                            color: colors.textSecondary,
-                            fontWeight: "800",
-                            marginTop: 4,
-                          }}
-                        >
-                          Quantidade: {a.quantity}
-                        </Text>
-                      </View>
-
-                      <Pressable
-                        onPress={() => removeAccessory(idx)}
-                        style={[
-                          styles.iconBtn,
-                          {
-                            borderColor: colors.border,
-                            backgroundColor: colors.surface,
-                          },
-                        ]}
-                        hitSlop={10}
-                      >
-                        <MaterialIcons
-                          name="delete"
-                          size={18}
-                          color={colors.textPrimary}
-                        />
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                <Text
-                  style={{ color: colors.textSecondary, fontWeight: "800" }}
-                >
-                  Ex.: corrente de chaveiro, argola, ímã, fita dupla-face…
-                </Text>
-              )}
-            </View>
-          ) : null}
-        </View>
-
-        <AppButton
-          title={saving ? "Salvando..." : "Salvar"}
-          onPress={onSave}
-          disabled={saving as any}
-        />
-      </ScrollView>
+          <AppButton
+            title={saving ? "Salvando..." : "Salvar"}
+            onPress={onSave}
+            disabled={saving as any}
+          />
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* Modal Picker */}
       <Modal

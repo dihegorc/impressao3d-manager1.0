@@ -1,9 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, FlatList, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  FlatList,
+  StyleSheet,
+  Text,
+  View,
+  KeyboardAvoidingView,
+  Platform,
+} from "react-native";
 import { RouteProp, useRoute, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useTheme } from "../../ui/theme/ThemeContext";
-import { SmallActionButton } from "../../ui/components/SmallActionButton";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { applyFilamentConsumption } from "./handlers/applyFilamentConsumption";
 
@@ -14,8 +21,8 @@ import { AppButton } from "../../ui/components/AppButton";
 
 import { FilamentRepository } from "../../domain/repositories/FilamentRepository";
 import { FilamentUsageRepository } from "../../domain/repositories/FilamentUsageRepository";
-import { uid } from "../../core/utils/uuid";
 import { Filament } from "../../domain/models/Filament";
+import { FilamentUsage } from "../../domain/models/FilamentUsage";
 
 type R = RouteProp<FilamentsStackParamList, "FilamentConsumption">;
 type Nav = NativeStackNavigationProp<FilamentsStackParamList>;
@@ -27,298 +34,199 @@ function toNumber(v: string): number {
 }
 
 function formatKg(g: number) {
-  return `${(g / 1000).toFixed(3).replace(".", ",")} kg`;
-}
-
-function matchesGroupKey(f: Filament, groupKey: string) {
-  const brand = (f.brand ?? "").trim().toLowerCase();
-  const key = `${f.material.trim().toLowerCase()}|${f.color.trim().toLowerCase()}|${brand}`;
-  return key === groupKey;
+  return (g / 1000).toFixed(3).replace(".", ",");
 }
 
 export function FilamentConsumptionScreen() {
-  const route = useRoute<R>();
   const navigation = useNavigation<Nav>();
+  const route = useRoute<R>();
   const { groupKey } = route.params;
   const { colors } = useTheme();
   const tabBarHeight = useBottomTabBarHeight();
 
-  const [spools, setSpools] = useState<Filament[]>([]);
-  const [history, setHistory] = useState<any[]>([]);
+  const [filaments, setFilaments] = useState<Filament[]>([]);
+  const [history, setHistory] = useState<FilamentUsage[]>([]);
   const [grams, setGrams] = useState("");
-  const [note, setNote] = useState("");
-  const [showSpools, setShowSpools] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
-  const totals = useMemo(() => {
-    const totalG = spools.reduce((s, f) => s + f.weightCurrentG, 0);
-    return { totalG };
-  }, [spools]);
-
-  async function load() {
-    const all = await FilamentRepository.list();
-    const groupSpools = all
-      .filter((f) => matchesGroupKey(f, groupKey))
-      // FIFO: mais antigo primeiro
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-
-    setSpools(groupSpools);
-
-    const h = await FilamentUsageRepository.listByGroup(groupKey);
-    console.log(
-      "FilamentConsumptionScreen.load -> groupKey:",
-      groupKey,
-      "spools:",
-      groupSpools.length,
-      "history:",
-      h.length,
-      h[0],
-    );
-    setHistory(h);
-  }
-
+  // Carrega dados
   useEffect(() => {
     load();
-  }, []);
+  }, [groupKey]);
 
-  function confirmRemoveSpool(spoolId: string, currentG: number) {
-    Alert.alert(
-      "Remover carretel?",
-      `Isso vai remover este carretel do estoque do grupo.\nSaldo atual do carretel: ${currentG}g.`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Remover",
-          style: "destructive",
-          onPress: async () => {
-            await FilamentRepository.remove(spoolId);
-            await load();
-          },
-        },
-      ],
-    );
-  }
+  async function load() {
+    // 1. Busca filamentos do grupo
+    const all = await FilamentRepository.list();
 
-  async function applyConsumption() {
-    return applyFilamentConsumption({
-      groupKey,
-      spools,
-      grams,
-      note,
-      setSpools,
-      setHistory,
-      setShowHistory,
-      setGrams,
-      setNote,
-      load,
-      navigation,
+    const filtered = all.filter((f) => {
+      const b = (f.brand ?? "").trim().toLowerCase();
+      const gk = `${f.material.trim().toLowerCase()}|${f.color.trim().toLowerCase()}|${b}`;
+      return gk === groupKey;
     });
+
+    // Ordena para consumir primeiro de quem tem mais (ou outra lógica)
+    filtered.sort((a, b) => b.weightCurrentG - a.weightCurrentG);
+    setFilaments(filtered);
+
+    // 2. CORREÇÃO: Busca histórico direto pelo groupKey
+    try {
+      const usages = await FilamentUsageRepository.listByGroup(groupKey);
+      // Ordena por data (mais recente primeiro)
+      usages.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      setHistory(usages);
+    } catch (e) {
+      console.error("Erro ao carregar histórico:", e);
+    }
   }
 
-  function parseGroupKey(groupKey: string) {
-    const [materialRaw, colorRaw, brandRaw] = (groupKey ?? "").split("|");
-    return {
-      material: (materialRaw ?? "PLA").toUpperCase(),
-      color: (colorRaw ?? "").trim(),
-      brand: (brandRaw ?? "").trim(),
-    };
-  }
+  // Estatísticas do grupo
+  const stats = useMemo(() => {
+    let total = 0;
+    let count = 0;
+    for (const f of filaments) {
+      total += f.weightCurrentG;
+      count++;
+    }
+    return { total, count, material: filaments[0]?.material ?? "?" };
+  }, [filaments]);
 
-  function onAddSpoolToGroup() {
-    const base = spools[0];
-    const parsed = parseGroupKey(groupKey);
+  async function onConfirm() {
+    if (processing) return;
+    const g = toNumber(grams);
+    if (!Number.isFinite(g) || g <= 0) {
+      Alert.alert("Inválido", "Informe a quantidade em gramas.");
+      return;
+    }
 
-    const prefill = {
-      material: (base?.material ?? (parsed.material as any)) as any,
-      color: base?.color ?? parsed.color,
-      brand: base?.brand ?? parsed.brand,
-    };
+    if (g > stats.total) {
+      Alert.alert(
+        "Saldo insuficiente",
+        `Você tem ${stats.total}g neste grupo, mas tentou consumir ${g}g.`,
+      );
+      return;
+    }
 
-    navigation.navigate(
-      "FilamentForm" as any,
-      { prefill, lockPrefill: true } as any,
-    );
+    setProcessing(true);
+    try {
+      // Algoritmo de baixa no estoque
+      await applyFilamentConsumption(filaments, g);
+      setGrams("");
+      await load(); // Recarrega os dados
+      Alert.alert("Sucesso", "Consumo registrado!");
+    } catch (e: any) {
+      Alert.alert("Erro", e.message);
+    } finally {
+      setProcessing(false);
+    }
   }
 
   return (
-    <Screen contentStyle={{ paddingBottom: tabBarHeight + 16 }}>
-      <Text style={[styles.h1, { color: colors.textPrimary }]}>
-        Calculadora de Consumo
-      </Text>
-
-      <View
-        style={[
-          styles.box,
-          { borderColor: colors.border, backgroundColor: colors.surface },
-        ]}
+    <Screen>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1 }}
       >
-        <Text style={[styles.boxLabel, { color: colors.textSecondary }]}>
-          Saldo do grupo
-        </Text>
-        <Text style={[styles.boxValue, { color: colors.textPrimary }]}>
-          {formatKg(totals.totalG)} ({totals.totalG}g)
-        </Text>
-        <Text style={[styles.boxSub, { color: colors.textSecondary }]}>
-          Carretéis: {spools.length}
-        </Text>
-      </View>
-      <View style={styles.consumeCard}>
-        <AppInput
-          label="Consumo (g)"
-          value={grams}
-          onChangeText={setGrams}
-          keyboardType="numeric"
-          placeholder="Ex: 85"
-        />
+        <FlatList
+          data={history}
+          keyExtractor={(item) => item.id}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: tabBarHeight + 20,
+            gap: 12,
+          }}
+          ListHeaderComponent={
+            <View style={{ gap: 12 }}>
+              <Text style={[styles.h1, { color: colors.textPrimary }]}>
+                Registrar Consumo
+              </Text>
 
-        <AppInput
-          label="Observação (opcional)"
-          value={note}
-          onChangeText={setNote}
-          placeholder="Ex: Chaveiro Heitor / Suporte / etc."
-        />
-
-        <View style={{ marginTop: 6 }}>
-          <AppButton title="Aplicar consumo" onPress={applyConsumption} />
-        </View>
-
-        <View style={{ marginTop: 10 }}>
-          <AppButton
-            title="Adicionar filamento deste grupo"
-            onPress={onAddSpoolToGroup}
-          />
-        </View>
-
-        <View style={styles.sectionHeader}>
-          <Text style={[styles.h2, { color: colors.textPrimary }]}>
-            Carretéis do grupo
-          </Text>
-          <SmallActionButton
-            title={showSpools ? "Recolher" : `Expandir (${spools.length})`}
-            icon={showSpools ? "expand-less" : "expand-more"}
-            onPress={() => setShowSpools((v) => !v)}
-          />
-        </View>
-
-        {showSpools ? (
-          spools.length === 0 ? (
-            <Text style={{ color: colors.textSecondary }}>
-              Nenhum carretel neste grupo.
-            </Text>
-          ) : (
-            <FlatList
-              data={spools}
-              keyExtractor={(it) => it.id}
-              style={{ maxHeight: 260 }} // ✅ evita cortar
-              nestedScrollEnabled // ✅ ajuda no Android
-              contentContainerStyle={{ gap: 10, paddingBottom: 8 }}
-              renderItem={({ item }) => (
+              <View style={styles.box}>
                 <View
-                  style={[
-                    styles.spoolCard,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.border,
-                    },
-                  ]}
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                  }}
                 >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={[styles.spoolTitle, { color: colors.textPrimary }]}
-                    >
-                      {item.brand
-                        ? `${item.material} - ${item.color} - ${item.brand}`
-                        : `${item.material} - ${item.color}`}
-                    </Text>
-                    <Text
-                      style={[styles.spoolSub, { color: colors.textSecondary }]}
-                    >
-                      Saldo: {item.weightCurrentG}g • Inicial:{" "}
-                      {item.weightInitialG}g
-                    </Text>
-                  </View>
-                  <SmallActionButton
-                    title={"Remover"}
-                    icon="delete"
-                    onPress={() =>
-                      confirmRemoveSpool(item.id, item.weightCurrentG)
-                    }
-                  />
-                </View>
-              )}
-            />
-          )
-        ) : (
-          <Text style={{ color: colors.textSecondary }}>
-            Saldo do grupo: {formatKg(totals.totalG)} • Carretéis:{" "}
-            {spools.length}
-          </Text>
-        )}
-
-        <View style={styles.sectionHeader}>
-          <Text style={[styles.h2, { color: colors.textPrimary }]}>
-            Histórico
-          </Text>
-          <SmallActionButton
-            title={showHistory ? "Recolher" : `Expandir (${history.length})`}
-            icon={showHistory ? "expand-less" : "expand-more"}
-            onPress={() => setShowHistory((v) => !v)}
-          />
-        </View>
-
-        {showHistory ? (
-          history.length === 0 ? (
-            <Text style={{ color: colors.textSecondary }}>
-              Nenhum consumo registrado.
-            </Text>
-          ) : (
-            <FlatList
-              data={history}
-              keyExtractor={(it) => it.id}
-              style={{ maxHeight: 260 }} // ✅ evita cortar
-              nestedScrollEnabled
-              contentContainerStyle={{
-                paddingBottom: tabBarHeight + 16,
-                gap: 10,
-              }}
-              renderItem={({ item }) => (
-                <View
-                  style={[
-                    styles.histCard,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[styles.histTitle, { color: colors.textPrimary }]}
-                  >
-                    -{item.gramsUsed}g
+                  <Text style={styles.boxLabel}>ESTOQUE TOTAL (GRUPO)</Text>
+                  <Text style={[styles.boxLabel, { color: colors.primary }]}>
+                    {stats.material}
                   </Text>
-                  <Text
-                    style={[styles.histSub, { color: colors.textSecondary }]}
-                  >
-                    {new Date(item.createdAt).toLocaleString()}
-                  </Text>
-                  {item.note ? (
-                    <Text
-                      style={[styles.histSub, { color: colors.textSecondary }]}
-                    >
-                      {item.note}
-                    </Text>
-                  ) : null}
                 </View>
+                <Text style={[styles.boxValue, { color: colors.textPrimary }]}>
+                  {formatKg(stats.total)} kg
+                </Text>
+                <Text style={styles.boxSub}>
+                  {stats.count} carretéis disponíveis
+                </Text>
+              </View>
+
+              <View style={styles.consumeCard}>
+                <AppInput
+                  label="Quantidade consumida (g)"
+                  value={grams}
+                  onChangeText={setGrams}
+                  keyboardType="numeric"
+                  placeholder="Ex: 150"
+                />
+
+                <AppButton
+                  title={processing ? "Salvando..." : "Confirmar Consumo"}
+                  onPress={onConfirm}
+                  disabled={processing}
+                />
+              </View>
+
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: colors.border,
+                  marginVertical: 8,
+                }}
+              />
+
+              <Text style={[styles.h2, { color: colors.textPrimary }]}>
+                Histórico Recente
+              </Text>
+
+              {history.length === 0 && (
+                <Text style={{ color: colors.textSecondary, marginTop: 4 }}>
+                  Nenhum consumo registrado ainda.
+                </Text>
               )}
-            />
-          )
-        ) : (
-          <Text style={{ color: colors.textSecondary }}>
-            Últimos consumos:{" "}
-            {history.length ? `-${history[0]?.gramsUsed ?? "—"}g` : "—"}
-          </Text>
-        )}
-      </View>
+            </View>
+          }
+          renderItem={({ item }) => (
+            <View
+              style={[
+                styles.histCard,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.surface,
+                },
+              ]}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Text style={{ fontWeight: "900", color: colors.textPrimary }}>
+                  -{item.gramsUsed}g
+                </Text>
+                <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+                  {new Date(item.createdAt).toLocaleDateString("pt-BR")}{" "}
+                  {new Date(item.createdAt).toLocaleTimeString("pt-BR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+              </View>
+            </View>
+          )}
+        />
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
@@ -326,7 +234,7 @@ export function FilamentConsumptionScreen() {
 const styles = StyleSheet.create({
   h1: { fontSize: 18, fontWeight: "900" },
   h2: {
-    marginTop: 14,
+    marginTop: 6,
     fontSize: 16,
     fontWeight: "900",
   },
@@ -350,26 +258,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 16,
     padding: 12,
-  },
-  histTitle: { fontSize: 16, fontWeight: "900" },
-  histSub: { color: "#555" },
-  spoolCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderWidth: 1,
-    borderColor: "#eee",
-    borderRadius: 16,
-    padding: 12,
-    backgroundColor: "#fff",
-  },
-  spoolTitle: { fontSize: 14, fontWeight: "900" },
-  spoolSub: { color: "#555", marginTop: 4 },
-  sectionHeader: {
-    marginTop: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
   },
 });

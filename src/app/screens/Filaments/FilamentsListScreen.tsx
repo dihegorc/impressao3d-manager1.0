@@ -1,4 +1,4 @@
-import React, { useCallback, useLayoutEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
   Pressable,
@@ -10,7 +10,6 @@ import {
 } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import type { RouteProp } from "@react-navigation/native";
 import { useTheme } from "../../ui/theme/ThemeContext";
 import { Screen } from "../../ui/components/Screen";
 import { FilamentRepository } from "../../domain/repositories/FilamentRepository";
@@ -44,7 +43,7 @@ export function FilamentsListScreen() {
   const [items, setItems] = useState<Filament[]>([]);
   const [colorFilter, setColorFilter] = useState<string>("all");
   const [colorFilterOpen, setColorFilterOpen] = useState(false);
-  const { colors, isDark, toggle } = useTheme();
+  const { colors } = useTheme();
   const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
@@ -116,34 +115,22 @@ export function FilamentsListScreen() {
   }, [groupsSearched, colorFilter]);
 
   const availableColors = useMemo(() => {
-    // pega cores do grupo (que vêm do item.color original)
-    const colors = Array.from(
+    const colorsArr = Array.from(
       new Set(groups.map((g) => (g.color ?? "").trim()).filter(Boolean)),
     );
-
-    // ordena alfabeticamente
-    colors.sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
-
-    return colors;
+    colorsArr.sort((a, b) =>
+      a.localeCompare(b, "pt-BR", { sensitivity: "base" }),
+    );
+    return colorsArr;
   }, [groups]);
 
   const colorOptions = useMemo(() => {
     return ["all", ...availableColors];
   }, [availableColors]);
 
-  const availableLevels = Array.from(
-    new Set(groups.map((g) => stockLevel(g.totalG))),
-  ) as StockLevel[];
-
-  const levelOrder: Record<StockLevel, number> = {
-    green: 1,
-    yellow: 2,
-    red: 3,
-  };
-  availableLevels.sort((a, b) => levelOrder[a] - levelOrder[b]);
-
   return (
     <Screen contentStyle={{ padding: 0 }}>
+      {/* MODAL DE FILTRO DE CORES */}
       <Modal
         visible={colorFilterOpen}
         transparent
@@ -191,7 +178,6 @@ export function FilamentsListScreen() {
                   >
                     {label}
                   </Text>
-
                   {active ? (
                     <MaterialIcons
                       name="check"
@@ -207,22 +193,19 @@ export function FilamentsListScreen() {
       </Modal>
 
       <View style={[styles.page, { backgroundColor: colors.background }]}>
-        {/* Top header dentro da tela */}
+        {/* HEADER SUPERIOR */}
         <View style={styles.topHeader}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>
             Filamentos
           </Text>
         </View>
 
-        {/* Search */}
+        {/* BARRA DE PESQUISA */}
         <View style={styles.searchWrap}>
           <View
             style={[
               styles.searchBar,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-              },
+              { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
             <MaterialIcons
@@ -233,11 +216,10 @@ export function FilamentsListScreen() {
             <TextInput
               value={query}
               onChangeText={setQuery}
-              placeholder="Search..."
+              placeholder="Pesquisar..."
               placeholderTextColor={colors.textSecondary}
               style={[styles.searchInput, { color: colors.textPrimary }]}
             />
-
             <Pressable
               onPress={() => setColorFilterOpen(true)}
               style={[
@@ -251,20 +233,19 @@ export function FilamentsListScreen() {
           </View>
         </View>
 
-        {/* Section header */}
+        {/* CABEÇALHO DA LISTA */}
         <View style={styles.sectionRow}>
           <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-            Items
+            Inventário
           </Text>
-
           <Pressable onPress={() => setColorFilter("all")} hitSlop={8}>
             <Text style={[styles.viewAll, { color: colors.textSecondary }]}>
-              View All
+              Ver Todos
             </Text>
           </Pressable>
         </View>
 
-        {/* List */}
+        {/* LISTA DE GRUPOS DE FILAMENTOS */}
         <FlatList
           data={groupsFiltered}
           keyExtractor={(it) => it.groupKey}
@@ -298,7 +279,7 @@ export function FilamentsListScreen() {
                   },
                 ]}
               >
-                {/* “thumb” (ícone quadrado como na imagem) */}
+                {/* ÍCONE À ESQUERDA (Thumb) */}
                 <View
                   style={[styles.thumb, { backgroundColor: colors.iconBg }]}
                 >
@@ -309,7 +290,7 @@ export function FilamentsListScreen() {
                   />
                 </View>
 
-                {/* text */}
+                {/* TEXTOS CENTRAIS */}
                 <View style={{ flex: 1 }}>
                   <Text
                     style={[styles.cardTitle, { color: colors.textPrimary }]}
@@ -317,6 +298,7 @@ export function FilamentsListScreen() {
                   >
                     {title}
                   </Text>
+                  {/* Aqui mantemos o peso, pois fica bem na descrição */}
                   <Text
                     style={[styles.cardSub, { color: colors.textSecondary }]}
                     numberOfLines={1}
@@ -325,10 +307,26 @@ export function FilamentsListScreen() {
                   </Text>
                 </View>
 
-                {/* Right “price-like” (valor destacado como no design) */}
-                <Text style={[styles.cardRight, { color: colors.textPrimary }]}>
-                  {totalKg}kg
-                </Text>
+                {/* AÇÃO RÁPIDA (Adicionar novo carretel deste grupo) */}
+                <Pressable
+                  onPress={() =>
+                    navigation.navigate("FilamentForm", {
+                      prefill: {
+                        material: item.material as any,
+                        color: item.color,
+                        brand: item.brand,
+                      },
+                    })
+                  }
+                  hitSlop={12}
+                  style={{ paddingLeft: 8 }}
+                >
+                  <MaterialIcons
+                    name="add-circle-outline"
+                    size={28}
+                    color={colors.textPrimary}
+                  />
+                </Pressable>
               </Pressable>
             );
           }}
@@ -343,15 +341,10 @@ export function FilamentsListScreen() {
           }
         />
 
-        {/* FAB */}
+        {/* FAB (Botão Flutuante para criar filamento do zero) */}
         <Pressable
           onPress={() => navigation.navigate("FilamentForm")}
-          style={[
-            styles.fab,
-            {
-              backgroundColor: "#2F66FF", // igual vibe do exemplo (azul)
-            },
-          ]}
+          style={[styles.fab, { backgroundColor: "#2F66FF" }]}
           hitSlop={12}
         >
           <MaterialIcons name="add" size={26} color="#fff" />
@@ -363,18 +356,14 @@ export function FilamentsListScreen() {
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
-
   topHeader: {
     paddingTop: 18,
     paddingHorizontal: 16,
     paddingBottom: 8,
     alignItems: "center",
   },
-
   title: { fontSize: 18, fontWeight: "900" },
-
   searchWrap: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 },
-
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -384,9 +373,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-
   searchInput: { flex: 1, fontSize: 15, fontWeight: "700" },
-
   iconBtn: {
     width: 36,
     height: 36,
@@ -395,7 +382,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   sectionRow: {
     marginTop: 10,
     paddingHorizontal: 16,
@@ -403,10 +389,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-
   sectionTitle: { fontSize: 15, fontWeight: "900" },
   viewAll: { fontWeight: "800" },
-
   card: {
     flexDirection: "row",
     alignItems: "center",
@@ -414,14 +398,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 18,
     padding: 14,
-
     shadowColor: "#000",
     shadowOpacity: 0.06,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
-
   thumb: {
     width: 44,
     height: 44,
@@ -429,11 +411,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   cardTitle: { fontSize: 15, fontWeight: "900" },
   cardSub: { marginTop: 4, fontWeight: "700" },
-  cardRight: { fontWeight: "900" },
-
+  // cardRight removido pois foi substituído pelo botão de ação
   fab: {
     position: "absolute",
     right: 18,
@@ -449,106 +429,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 6,
   },
-
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-
-  empty: { marginTop: 36, gap: 12, alignItems: "flex-start" },
-
-  emptyText: { color: "#666" },
-
-  cardLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    flex: 1,
-  },
-  iconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "#f4f4f4",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardActions: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  actionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e5e5e5",
-    backgroundColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  addButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "#111",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  addButtonText: {
-    color: "#fff",
-    fontSize: 26,
-    fontWeight: "900",
-    marginTop: -2,
-  },
-
-  filters: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 6,
-  },
-  filterChip: {
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#fff",
-  },
-  filterChipActive: {
-    backgroundColor: "#111",
-    borderColor: "#111",
-  },
-  filterText: {
-    fontWeight: "800",
-    color: "#111",
-  },
-  filterTextActive: {
-    color: "#fff",
-  },
-  filterRow: {
-    marginTop: 6,
-  },
-  filterButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    borderWidth: 1,
-    borderColor: "#e5e5e5",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#fff",
-  },
-  filterButtonText: {
-    fontWeight: "900",
-    color: "#111",
-  },
-
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.35)",
@@ -562,11 +442,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#eee",
   },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: "900",
-    marginBottom: 10,
-  },
+  modalTitle: { fontSize: 16, fontWeight: "900", marginBottom: 10 },
   modalItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -575,18 +451,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 12,
   },
-  modalItemActive: {
-    backgroundColor: "#f3f3f3",
-  },
-  modalItemText: {
-    fontWeight: "800",
-    color: "#111",
-  },
-  modalItemTextActive: {
-    fontWeight: "900",
-  },
-  toolbar: {
-    marginTop: 8,
-    marginBottom: 2,
-  },
+  modalItemText: { fontWeight: "800", color: "#111" },
 });
