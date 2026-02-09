@@ -33,3 +33,11 @@ export type SalesStackParamList = {
   SalesList: undefined;
   SaleForm: { id?: string } | undefined;
 };
+
+export type SettingsStackParamList = {
+  SettingsList: undefined;
+  CostParameters: undefined;
+  AccessoriesList: undefined;
+  AccessoryForm: { id?: string } | undefined;
+  ThemeSelection: undefined;
+};

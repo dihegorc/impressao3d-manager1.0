@@ -11,6 +11,7 @@ export const lightColors = {
   success: "#1e8e3e",
   warning: "#f9ab00",
   danger: "#d93025",
+  error: "#d93025",
 
   iconBg: "#F4F4F4",
 };
@@ -28,6 +29,7 @@ export const darkColors = {
   success: "#4CAF50",
   warning: "#FFC107",
   danger: "#F44336",
+  error: "#F44336",
 
   iconBg: "#22252C",
 };

@@ -24,6 +24,9 @@ import { SalesListScreen } from "../screens/Sales/SalesListScreen";
 import { SaleFormScreen } from "../screens/Sales/SaleFormScreen";
 
 import { SettingsScreen } from "../screens/Settings/SettingsScreen";
+import { CostParametersScreen } from "../screens/Settings/CostParametersScreen";
+import { AccessoryFormScreen } from "../screens/Settings/AccessoryFormScreen";
+import { AccessoriesListScreen } from "../screens/Settings/AccessoriesListScreen";
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
 
@@ -162,6 +165,22 @@ function SettingsStackNavigator() {
         name="Settings"
         component={SettingsScreen}
         options={{ title: "Configurações" }}
+      />
+      <SettingsStack.Screen
+        name="CostParameters"
+        component={CostParametersScreen}
+        options={{ title: "Parâmetros" }}
+      />
+      <SettingsStack.Screen
+        name="AccessoryForm"
+        component={AccessoryFormScreen}
+        options={{ title: "Acessório" }}
+      />
+
+      <SettingsStack.Screen
+        name="AccessoriesList"
+        component={AccessoriesListScreen}
+        options={{ title: "Acessórios e Extras" }}
       />
     </SettingsStack.Navigator>
   );
