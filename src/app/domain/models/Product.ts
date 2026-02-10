@@ -1,46 +1,48 @@
-// domain/models/Product.ts
-
-export type ProductFilament = {
+export interface ProductFilament {
   material: string;
   color: string;
   brand?: string;
   grams: number;
-  plateMinutes: number;
-};
+}
 
-export type ProductAccessory = {
+export interface PrintPlate {
+  id: string;
+  name: string;
+  estimatedMinutes: number;
+  unitsOnPlate: number; // Rendimento: Quantas unidades saem desta plate?
+  filaments: ProductFilament[];
+}
+
+export interface ProductAccessory {
   name: string;
   quantity: number;
-};
-
-export type ProductStatus =
-  | "queued" // Na fila
-  | "printing" // Imprimindo
-  | "finishing" // Retoques finais
-  | "ready"; // Pronto / estoque
+}
 
 export interface Product {
   id: string;
   name: string;
   description?: string;
   photoUri?: string;
+
+  // Estrutura de Engenharia (BOM)
+  plates: PrintPlate[];
+  accessories: ProductAccessory[];
+
+  // Financeiro
   priceBRL: number;
 
-  // Receita de filamento (1 ou várias cores)
-  filaments: ProductFilament[];
+  // Controle de Produção
+  status: "ready" | "queued" | "printing";
 
-  accessories?: ProductAccessory[];
-
-  // Controle de produção (fila)
-  status: ProductStatus;
-  queuePosition?: number;
-
-  // Produção
-  quantity?: number;
+  // --- CORREÇÃO: Adicionado de volta como Opcional ---
+  // Serve como cache/snapshot do tempo total para itens na fila
   estimatedMinutes?: number;
+
+  queuePosition?: number;
+  quantity?: number;
+
   startedAt?: string;
   finishedAt?: string;
-
   createdAt: string;
   updatedAt: string;
 }
