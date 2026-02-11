@@ -45,4 +45,6 @@ export interface Product {
   finishedAt?: string;
   createdAt: string;
   updatedAt: string;
+  batchId?: string;
+  activePlateIndex?: number;
 }

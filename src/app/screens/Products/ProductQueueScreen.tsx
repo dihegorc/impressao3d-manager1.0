@@ -17,6 +17,8 @@ import { ProductRepository } from "../../domain/repositories/ProductRepository";
 import { FilamentRepository } from "../../domain/repositories/FilamentRepository";
 import { applyFilamentConsumption } from "../Filaments/handlers/applyFilamentConsumption";
 import type { Product } from "../../domain/models/Product";
+// CORREÇÃO: Importação do uid adicionada
+import { uid } from "../../core/utils/uuid";
 
 async function reindexQueue(currentItems: Product[]) {
   const sorted = [...currentItems].sort(
@@ -50,31 +52,27 @@ export function ProductQueueScreen() {
     }, [load]),
   );
 
-  // --- Helper: Calcula tempo total seguro ---
-  function getTotalTime(item: Product): number {
-    // 1. Tenta usar o snapshot gravado na fila
-    if (item.estimatedMinutes && item.estimatedMinutes > 0)
-      return item.estimatedMinutes;
+  // --- Helpers ---
 
-    // 2. Se não tiver, calcula das plates (Fallback)
-    if (item.plates && item.plates.length > 0) {
-      return item.plates.reduce((acc, plate) => {
-        const yieldQty = Math.max(1, plate.unitsOnPlate || 1);
-        return acc + plate.estimatedMinutes / yieldQty;
-      }, 0);
+  // Obtém informações da plate ativa (se houver)
+  function getActivePlateInfo(item: Product) {
+    // Se o item tiver activePlateIndex definido e a lista de plates existir
+    if (
+      item.plates &&
+      item.plates.length > 0 &&
+      item.activePlateIndex !== undefined &&
+      item.plates[item.activePlateIndex]
+    ) {
+      return item.plates[item.activePlateIndex];
     }
-
-    // 3. Fallback legado
-    return (item as any).estimatedMinutes ?? 0;
+    // Caso contrário (legado ou erro), retorna null
+    return null;
   }
 
   function getFinishTime(item: Product) {
-    if (!item.startedAt) return null;
-    const duration = getTotalTime(item);
-    if (duration <= 0) return null;
-
+    if (!item.startedAt || !item.estimatedMinutes) return null;
     const start = new Date(item.startedAt).getTime();
-    const end = start + duration * 60000;
+    const end = start + item.estimatedMinutes * 60000;
     return new Date(end).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -118,14 +116,15 @@ export function ProductQueueScreen() {
   }
 
   async function removeFromQueue(item: Product) {
-    Alert.alert("Remover", "Deseja cancelar este item?", [
-      { text: "Não" },
+    Alert.alert("Remover", "Deseja cancelar e remover este item da fila?", [
+      { text: "Não", style: "cancel" },
       {
-        text: "Sim",
+        text: "Sim, remover",
         style: "destructive",
         onPress: async () => {
           await ProductRepository.remove(item.id);
-          await reindexQueue(queue.filter((p) => p.id !== item.id));
+          const remaining = queue.filter((p) => p.id !== item.id);
+          await reindexQueue(remaining);
           load();
         },
       },
@@ -133,9 +132,12 @@ export function ProductQueueScreen() {
   }
 
   async function finishPrint(item: Product) {
+    const plateInfo = getActivePlateInfo(item);
+    const label = plateInfo ? `Plate "${plateInfo.name}"` : "o produto";
+
     Alert.alert(
-      "Finalizar Job",
-      "Confirmar finalização? O estoque de filamento será atualizado.",
+      "Finalizar Impressão",
+      `Confirmar que ${label} foi impressa? O filamento correspondente será consumido.`,
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -143,39 +145,90 @@ export function ProductQueueScreen() {
           onPress: async () => {
             setLoading(true);
             try {
+              const allItems = await ProductRepository.list(); // Busca tudo para verificar irmãos
               const allSpools = await FilamentRepository.list();
 
-              // Consumo via Plates
-              if (item.plates && item.plates.length > 0) {
-                for (const plate of item.plates) {
-                  const yieldQty = Math.max(1, plate.unitsOnPlate || 1);
-                  for (const f of plate.filaments) {
-                    const gramsToConsume = f.grams / yieldQty;
-                    const compatible = allSpools.filter(
-                      (s) =>
-                        s.material === f.material &&
-                        s.color === f.color &&
-                        (!f.brand || s.brand === f.brand),
-                    );
-                    if (compatible.length > 0) {
-                      await applyFilamentConsumption(
-                        compatible,
-                        gramsToConsume,
-                      );
-                    }
+              // 1. Consumo via Plate Ativa
+              if (plateInfo) {
+                // Consome apenas os filamentos desta plate
+                for (const f of plateInfo.filaments) {
+                  // Consumo bruto da plate
+                  const gramsToConsume = f.grams;
+
+                  const compatible = allSpools.filter(
+                    (s) =>
+                      s.material === f.material &&
+                      s.color === f.color &&
+                      (!f.brand || s.brand === f.brand),
+                  );
+
+                  if (compatible.length > 0) {
+                    await applyFilamentConsumption(compatible, gramsToConsume);
+                  }
+                }
+              }
+              // 2. Consumo Legado (Produtos antigos sem plates)
+              else if ((item as any).filaments) {
+                const legacy = (item as any).filaments;
+                for (const f of legacy) {
+                  const compatible = allSpools.filter(
+                    (s) =>
+                      s.material === f.material &&
+                      s.color === f.color &&
+                      (!f.brand || s.brand === f.brand),
+                  );
+                  if (compatible.length > 0) {
+                    await applyFilamentConsumption(compatible, f.grams);
                   }
                 }
               }
 
-              await ProductRepository.upsert({
-                ...item,
-                status: "ready",
-                finishedAt: new Date().toISOString(),
-                queuePosition: undefined,
-              });
+              // 3. LÓGICA DE LOTE (BATCH CHECK)
+              // Verifica se existem outros itens na fila com o mesmo batchId
+              const pendingSiblings = allItems.filter(
+                (p) =>
+                  p.batchId && // Tem lote
+                  p.batchId === item.batchId && // Mesmo lote
+                  p.id !== item.id && // Não é este item
+                  p.status !== "ready", // Ainda não finalizou
+              );
 
+              // Remove o item atual da fila (já foi impresso)
+              await ProductRepository.remove(item.id);
+
+              if (pendingSiblings.length > 0) {
+                // CASO A: Ainda faltam plates do mesmo lote.
+                // Apenas removemos este da fila e seguimos.
+                // Não cria estoque final ainda.
+              } else {
+                // CASO B: Não sobrou ninguém. O produto está completo!
+                // Cria o item final no estoque.
+
+                const finishedProduct = {
+                  ...item,
+                  id: uid(), // <--- AQUI ESTAVA O PROBLEMA (uid precisa ser importado)
+                  status: "ready" as const,
+                  quantity: 1, // 1 unidade pronta
+                  finishedAt: new Date().toISOString(),
+
+                  // Remove dados temporários da fila
+                  queuePosition: undefined,
+                  activePlateIndex: undefined,
+                  batchId: undefined,
+                  estimatedMinutes: undefined,
+                };
+
+                await ProductRepository.upsert(finishedProduct);
+                Alert.alert(
+                  "Sucesso",
+                  "Produto completo finalizado e adicionado ao estoque!",
+                );
+              }
+
+              // 4. Reorganiza a fila restante
               const remaining = queue.filter((p) => p.id !== item.id);
               await reindexQueue(remaining);
+
               load();
             } catch (e: any) {
               Alert.alert("Erro", e.message);
@@ -188,12 +241,20 @@ export function ProductQueueScreen() {
     );
   }
 
-  if (loading)
+  if (loading) {
     return (
       <Screen>
-        <ActivityIndicator size="large" color={colors.primary} />
+        <View
+          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+        >
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={{ marginTop: 10, color: colors.textSecondary }}>
+            Processando estoque...
+          </Text>
+        </View>
       </Screen>
     );
+  }
 
   return (
     <Screen contentStyle={{ padding: 0 }}>
@@ -213,7 +274,7 @@ export function ProductQueueScreen() {
             color={colors.primary}
           />
           <Text style={{ color: colors.textSecondary, fontWeight: "600" }}>
-            {queue.length} {queue.length === 1 ? "item" : "itens"} na fila
+            {queue.length} {queue.length === 1 ? "job" : "jobs"} na fila
           </Text>
         </View>
       </View>
@@ -226,10 +287,13 @@ export function ProductQueueScreen() {
           const isPrinting = item.status === "printing";
           const isFirst = index === 0;
           const isLast = index === queue.length - 1;
-
-          // Usa a função segura para pegar o tempo
-          const totalMinutes = getTotalTime(item);
           const finishTime = isPrinting ? getFinishTime(item) : null;
+
+          // Recupera dados da plate para exibição
+          const plateInfo = getActivePlateInfo(item);
+          const displayTime = plateInfo
+            ? plateInfo.estimatedMinutes
+            : item.estimatedMinutes;
 
           return (
             <View
@@ -242,12 +306,16 @@ export function ProductQueueScreen() {
                 },
               ]}
             >
+              {/* Esquerda: Controles */}
               <View style={styles.controlCol}>
                 {!isPrinting && (
                   <Pressable
                     onPress={() => moveUp(index)}
                     disabled={isFirst}
-                    style={{ opacity: isFirst ? 0.3 : 1, padding: 8 }}
+                    style={({ pressed }) => ({
+                      opacity: isFirst ? 0.3 : pressed ? 0.5 : 1,
+                      padding: 8,
+                    })}
                   >
                     <MaterialIcons
                       name="keyboard-arrow-up"
@@ -256,6 +324,7 @@ export function ProductQueueScreen() {
                     />
                   </Pressable>
                 )}
+
                 <View
                   style={[
                     styles.posBadge,
@@ -279,11 +348,15 @@ export function ProductQueueScreen() {
                     )}
                   </Text>
                 </View>
+
                 {!isPrinting && (
                   <Pressable
                     onPress={() => moveDown(index)}
                     disabled={isLast}
-                    style={{ opacity: isLast ? 0.3 : 1, padding: 8 }}
+                    style={({ pressed }) => ({
+                      opacity: isLast ? 0.3 : pressed ? 0.5 : 1,
+                      padding: 8,
+                    })}
                   >
                     <MaterialIcons
                       name="keyboard-arrow-down"
@@ -294,6 +367,7 @@ export function ProductQueueScreen() {
                 )}
               </View>
 
+              {/* Centro: Informações */}
               <View
                 style={{
                   flex: 1,
@@ -309,13 +383,40 @@ export function ProductQueueScreen() {
                   {item.name}
                 </Text>
 
+                {/* Exibição da Plate Específica */}
+                {plateInfo && (
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                      marginBottom: 2,
+                    }}
+                  >
+                    <MaterialIcons
+                      name="layers"
+                      size={14}
+                      color={colors.textSecondary}
+                    />
+                    <Text
+                      style={{
+                        color: colors.textSecondary,
+                        fontWeight: "700",
+                        fontSize: 13,
+                      }}
+                    >
+                      {plateInfo.name}
+                    </Text>
+                  </View>
+                )}
+
                 {isPrinting && finishTime ? (
                   <View
                     style={{
                       flexDirection: "row",
                       alignItems: "center",
                       gap: 4,
-                      marginBottom: 4,
+                      marginTop: 4,
                     }}
                   >
                     <MaterialIcons
@@ -337,7 +438,7 @@ export function ProductQueueScreen() {
                   <Text
                     style={[styles.cardSub, { color: colors.textSecondary }]}
                   >
-                    Tempo est.: {totalMinutes.toFixed(0)} min
+                    Tempo: {displayTime?.toFixed(0)} min
                   </Text>
                 )}
 
@@ -353,6 +454,7 @@ export function ProductQueueScreen() {
                         color: isPrinting ? "#137333" : "#c5221f",
                         fontSize: 11,
                         fontWeight: "900",
+                        letterSpacing: 0.5,
                       }}
                     >
                       {isPrinting ? "IMPRIMINDO AGORA" : "NA FILA"}
@@ -361,13 +463,17 @@ export function ProductQueueScreen() {
                 </View>
               </View>
 
+              {/* Direita: Ações */}
               <View style={styles.actionCol}>
                 {isPrinting ? (
                   <Pressable
                     onPress={() => finishPrint(item)}
-                    style={[
+                    style={({ pressed }) => [
                       styles.actionBtn,
-                      { backgroundColor: colors.success },
+                      {
+                        backgroundColor: colors.success,
+                        opacity: pressed ? 0.8 : 1,
+                      },
                     ]}
                   >
                     <MaterialIcons name="check" size={26} color="#fff" />
@@ -375,17 +481,24 @@ export function ProductQueueScreen() {
                 ) : (
                   <Pressable
                     onPress={() => startPrint(item)}
-                    style={[
+                    style={({ pressed }) => [
                       styles.actionBtn,
-                      { backgroundColor: colors.primary },
+                      {
+                        backgroundColor: colors.primary,
+                        opacity: pressed ? 0.8 : 1,
+                      },
                     ]}
                   >
                     <MaterialIcons name="play-arrow" size={26} color="#fff" />
                   </Pressable>
                 )}
+
                 <Pressable
                   onPress={() => removeFromQueue(item)}
-                  style={[styles.miniBtn, { marginTop: 16 }]}
+                  style={({ pressed }) => [
+                    styles.miniBtn,
+                    { marginTop: 16, opacity: pressed ? 0.6 : 1 },
+                  ]}
                   hitSlop={10}
                 >
                   <MaterialIcons
@@ -410,6 +523,7 @@ export function ProductQueueScreen() {
                 color: colors.textSecondary,
                 marginTop: 16,
                 fontWeight: "600",
+                fontSize: 16,
               }}
             >
               A fila está vazia.
@@ -429,6 +543,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   title: { fontSize: 24, fontWeight: "900" },
+
   card: {
     flexDirection: "row",
     borderRadius: 18,
@@ -436,7 +551,12 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     minHeight: 110,
     elevation: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
+
   controlCol: {
     width: 56,
     alignItems: "center",
@@ -454,19 +574,25 @@ const styles = StyleSheet.create({
     marginVertical: 4,
   },
   posText: { fontSize: 13, fontWeight: "900" },
+
   cardTitle: {
     fontSize: 16,
     fontWeight: "bold",
     marginBottom: 6,
     lineHeight: 22,
   },
-  cardSub: { fontSize: 13, lineHeight: 18 },
+  cardSub: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
   statusBadge: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
     alignSelf: "flex-start",
   },
+
   actionCol: {
     width: 70,
     alignItems: "center",
@@ -482,6 +608,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
-  miniBtn: { padding: 8 },
+  miniBtn: {
+    padding: 8,
+  },
 });

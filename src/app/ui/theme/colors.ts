@@ -2,6 +2,7 @@ export const lightColors = {
   background: "#FFFFFF",
   surface: "#FFFFFF",
   border: "#E5E5E5",
+  shadow: "#0000",
 
   textPrimary: "#111111",
   textSecondary: "#666666",
@@ -20,6 +21,7 @@ export const darkColors = {
   background: "#0F1115",
   surface: "#17191E",
   border: "#2A2D34",
+  shadow: "#0000",
 
   textPrimary: "#FFFFFF",
   textSecondary: "#B3B3B3",
