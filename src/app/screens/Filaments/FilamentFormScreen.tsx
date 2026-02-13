@@ -11,6 +11,7 @@ import {
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { ConfirmModal } from "../../ui/components/ConfirmModal";
 
 import type { FilamentsStackParamList } from "../../navigation/types";
 import { Screen } from "../../ui/components/Screen";
@@ -18,6 +19,7 @@ import { AppInput } from "../../ui/components/AppInput";
 import { AppButton } from "../../ui/components/AppButton";
 import { FilamentMaterial } from "../../domain/models/Filament";
 import { FilamentRepository } from "../../domain/repositories/FilamentRepository";
+import { useTheme } from "../../ui/theme/ThemeContext";
 
 type Nav = NativeStackNavigationProp<FilamentsStackParamList>;
 type R = RouteProp<FilamentsStackParamList, "FilamentForm">;
@@ -39,6 +41,7 @@ export function FilamentFormScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<R>();
   const tabBarHeight = useBottomTabBarHeight();
+  const colors = useTheme().colors;
 
   const id = route.params?.id;
   const prefill = route.params?.prefill;
@@ -54,6 +57,14 @@ export function FilamentFormScreen() {
   const [cost, setCost] = useState("");
   const [spoolQty, setSpoolQty] = useState("1");
   const [unitWeight, setUnitWeight] = useState("1000");
+
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    id: string | null;
+  }>({
+    open: false,
+    id: null,
+  });
 
   const generatedName = useMemo(
     () => buildFilamentName(material, color, brand),
@@ -187,7 +198,7 @@ export function FilamentFormScreen() {
           }}
         >
           <View style={styles.page}>
-            <Text style={styles.h1}>
+            <Text style={[styles.h1, { color: colors.textPrimary }]}>
               {isEdit ? "Editar Filamento" : "Novo Filamento"}
             </Text>
 

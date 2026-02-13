@@ -5,6 +5,7 @@ import {
   DarkTheme,
 } from "@react-navigation/native";
 import { useTheme } from "../ui/theme/ThemeContext";
+import { linking } from "./Linking";
 
 export function ThemedNavigationContainer({
   children,
@@ -37,5 +38,9 @@ export function ThemedNavigationContainer({
         },
       };
 
-  return <NavigationContainer theme={navTheme}>{children}</NavigationContainer>;
+  return (
+    <NavigationContainer linking={linking} theme={navTheme}>
+      {children}
+    </NavigationContainer>
+  );
 }

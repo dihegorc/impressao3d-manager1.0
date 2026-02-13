@@ -41,6 +41,7 @@ import {
 } from "../../domain/repositories/SettingsRepository";
 import { AccessoryRepository } from "../../domain/repositories/AccessoryRepository";
 import { uid } from "../../core/utils/uuid";
+import { ConfirmModal } from "../../ui/components/ConfirmModal";
 
 type R = RouteProp<ProductsStackParamList, "ProductForm">;
 type Nav = NativeStackNavigationProp<ProductsStackParamList>;
@@ -95,6 +96,7 @@ export function ProductFormScreen() {
 
   const [plates, setPlates] = useState<PrintPlate[]>([]);
   const [accessories, setAccessories] = useState<ProductAccessory[]>([]);
+  const [plateToDelete, setPlateToDelete] = useState<number | null>(null);
 
   // --- Dados Externos ---
   const [allSpools, setAllSpools] = useState<Filament[]>([]);
@@ -387,13 +389,14 @@ export function ProductFormScreen() {
     ]);
   }
   function removePlate(index: number) {
-    Alert.alert("Remover", "Confirma?", [
-      {
-        text: "Sim",
-        onPress: () => setPlates((prev) => prev.filter((_, i) => i !== index)),
-      },
-      { text: "Não" },
-    ]);
+    setPlateToDelete(index); // Abre o ConfirmModal
+  }
+
+  function confirmRemovePlate() {
+    if (plateToDelete !== null) {
+      setPlates((prev) => prev.filter((_, i) => i !== plateToDelete));
+      setPlateToDelete(null);
+    }
   }
 
   function openAddFilament(plateIndex: number) {
@@ -1027,6 +1030,7 @@ export function ProductFormScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* MODAL 1: Adicionar Filamento */}
       <Modal
         visible={filModalVisible}
         transparent
@@ -1037,7 +1041,11 @@ export function ProductFormScreen() {
           style={styles.modalBackdrop}
           onPress={() => setFilModalVisible(false)}
         >
-          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+          {/* AQUI ESTÁ A CORREÇÃO: Pressable + stopPropagation */}
+          <Pressable
+            style={[styles.modalCard, { backgroundColor: colors.surface }]}
+            onPress={(e) => e.stopPropagation()}
+          >
             <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
               Filamento na Mesa
             </Text>
@@ -1097,10 +1105,11 @@ export function ProductFormScreen() {
               </View>
               <AppButton title="Adicionar" onPress={confirmAddFilament} />
             </View>
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
+      {/* MODAL 2: Picker Genérico */}
       <Modal
         visible={picker.visible}
         transparent
@@ -1111,7 +1120,11 @@ export function ProductFormScreen() {
           style={styles.modalBackdrop}
           onPress={() => setPicker({ ...picker, visible: false })}
         >
-          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+          {/* AQUI ESTÁ A CORREÇÃO: Pressable + stopPropagation */}
+          <Pressable
+            style={[styles.modalCard, { backgroundColor: colors.surface }]}
+            onPress={(e) => e.stopPropagation()}
+          >
             <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
               {picker.title}
             </Text>
@@ -1134,9 +1147,20 @@ export function ProductFormScreen() {
                 </Pressable>
               ))}
             </ScrollView>
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
+
+      {/* MODAL 3: Confirmação de Exclusão de Mesa */}
+      <ConfirmModal
+        visible={plateToDelete !== null}
+        title="Remover Mesa"
+        message="Tem certeza que deseja remover esta mesa de impressão e seus filamentos?"
+        confirmText="Remover"
+        variant="danger"
+        onConfirm={confirmRemovePlate}
+        onCancel={() => setPlateToDelete(null)}
+      />
     </Screen>
   );
 }

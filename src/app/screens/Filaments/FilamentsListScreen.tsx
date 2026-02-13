@@ -17,6 +17,7 @@ import { FilamentRepository } from "../../domain/repositories/FilamentRepository
 import { Filament } from "../../domain/models/Filament";
 import type { FilamentsStackParamList } from "../../navigation/types";
 import { MaterialIcons } from "@expo/vector-icons";
+import { ConfirmModal } from "../../ui/components/ConfirmModal";
 
 type Nav = NativeStackNavigationProp<FilamentsStackParamList>;
 
@@ -56,6 +57,14 @@ export function FilamentsListScreen() {
     [],
   );
   const [selectedGroupTitle, setSelectedGroupTitle] = useState("");
+
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    id: string | null;
+  }>({
+    open: false,
+    id: null,
+  });
 
   const load = useCallback(async () => {
     const data = await FilamentRepository.list();
@@ -155,27 +164,26 @@ export function FilamentsListScreen() {
     setManageModalOpen(true);
   }
 
-  async function handleDeleteSpool(id: string) {
-    Alert.alert(
-      "Excluir Carretel",
-      "Tem certeza? Essa ação não pode ser desfeita.",
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Excluir",
-          style: "destructive",
-          onPress: async () => {
-            await FilamentRepository.remove(id);
-            // Fecha modal se for o último item, senão atualiza lista local
-            const newSpools = selectedGroupSpools.filter((s) => s.id !== id);
-            if (newSpools.length === 0) setManageModalOpen(false);
-            else setSelectedGroupSpools(newSpools);
+  function handleDeleteSpool(id: string) {
+    // Abre o modal customizado em vez do Alert nativo
+    setConfirmDelete({ open: true, id });
+  }
 
-            load(); // Recarrega lista global
-          },
-        },
-      ],
-    );
+  async function confirmDeletion() {
+    if (!confirmDelete.id) return;
+
+    const id = confirmDelete.id;
+    // ... Lógica original de exclusão ...
+    await FilamentRepository.remove(id);
+
+    const newSpools = selectedGroupSpools.filter((s) => s.id !== id);
+    if (newSpools.length === 0) setManageModalOpen(false);
+    else setSelectedGroupSpools(newSpools);
+
+    load();
+
+    // Fecha o modal
+    setConfirmDelete({ open: false, id: null });
   }
 
   return (
@@ -512,6 +520,18 @@ export function FilamentsListScreen() {
           </View>
         </Pressable>
       </Modal>
+
+      {/* Modal de Confirmação de Exclusão */}
+      <ConfirmModal
+        visible={confirmDelete.open}
+        title="Excluir Carretel"
+        message="Tem certeza? Essa ação não pode ser desfeita."
+        confirmText="Excluir"
+        cancelText="Cancelar"
+        variant="danger" // Botão vermelho!
+        onCancel={() => setConfirmDelete({ open: false, id: null })}
+        onConfirm={confirmDeletion}
+      />
     </Screen>
   );
 }

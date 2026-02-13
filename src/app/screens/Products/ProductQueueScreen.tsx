@@ -17,7 +17,7 @@ import { ProductRepository } from "../../domain/repositories/ProductRepository";
 import { FilamentRepository } from "../../domain/repositories/FilamentRepository";
 import { applyFilamentConsumption } from "../Filaments/handlers/applyFilamentConsumption";
 import type { Product } from "../../domain/models/Product";
-// CORREÇÃO: Importação do uid adicionada
+import { ConfirmModal } from "../../ui/components/ConfirmModal";
 import { uid } from "../../core/utils/uuid";
 
 async function reindexQueue(currentItems: Product[]) {
@@ -36,6 +36,10 @@ export function ProductQueueScreen() {
   const { colors } = useTheme();
   const [queue, setQueue] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{
+    type: "remove" | "finish" | null;
+    item: Product | null;
+  }>({ type: null, item: null });
 
   const load = useCallback(async () => {
     const all = await ProductRepository.list();
@@ -115,130 +119,98 @@ export function ProductQueueScreen() {
     load();
   }
 
-  async function removeFromQueue(item: Product) {
-    Alert.alert("Remover", "Deseja cancelar e remover este item da fila?", [
-      { text: "Não", style: "cancel" },
-      {
-        text: "Sim, remover",
-        style: "destructive",
-        onPress: async () => {
-          await ProductRepository.remove(item.id);
-          const remaining = queue.filter((p) => p.id !== item.id);
-          await reindexQueue(remaining);
-          load();
-        },
-      },
-    ]);
+  function removeFromQueue(item: Product) {
+    setConfirmAction({ type: "remove", item });
   }
 
-  async function finishPrint(item: Product) {
-    const plateInfo = getActivePlateInfo(item);
-    const label = plateInfo ? `Plate "${plateInfo.name}"` : "o produto";
+  function finishPrint(item: Product) {
+    setConfirmAction({ type: "finish", item });
+  }
 
-    Alert.alert(
-      "Finalizar Impressão",
-      `Confirmar que ${label} foi impressa? O filamento correspondente será consumido.`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Confirmar",
-          onPress: async () => {
-            setLoading(true);
-            try {
-              const allItems = await ProductRepository.list(); // Busca tudo para verificar irmãos
-              const allSpools = await FilamentRepository.list();
+  async function handleConfirmRemove() {
+    const { item } = confirmAction;
+    if (!item) return;
 
-              // 1. Consumo via Plate Ativa
-              if (plateInfo) {
-                // Consome apenas os filamentos desta plate
-                for (const f of plateInfo.filaments) {
-                  // Consumo bruto da plate
-                  const gramsToConsume = f.grams;
+    await ProductRepository.remove(item.id);
+    const remaining = queue.filter((p) => p.id !== item.id);
+    await reindexQueue(remaining);
+    load();
+    setConfirmAction({ type: null, item: null });
+  }
 
-                  const compatible = allSpools.filter(
-                    (s) =>
-                      s.material === f.material &&
-                      s.color === f.color &&
-                      (!f.brand || s.brand === f.brand),
-                  );
+  async function handleConfirmFinish() {
+    const { item } = confirmAction;
+    if (!item) return;
 
-                  if (compatible.length > 0) {
-                    await applyFilamentConsumption(compatible, gramsToConsume);
-                  }
-                }
-              }
-              // 2. Consumo Legado (Produtos antigos sem plates)
-              else if ((item as any).filaments) {
-                const legacy = (item as any).filaments;
-                for (const f of legacy) {
-                  const compatible = allSpools.filter(
-                    (s) =>
-                      s.material === f.material &&
-                      s.color === f.color &&
-                      (!f.brand || s.brand === f.brand),
-                  );
-                  if (compatible.length > 0) {
-                    await applyFilamentConsumption(compatible, f.grams);
-                  }
-                }
-              }
+    setLoading(true);
+    try {
+      // ... (MANTENHA TODA A SUA LÓGICA ORIGINAL DO finishPrint AQUI) ...
+      const plateInfo = getActivePlateInfo(item);
+      const allItems = await ProductRepository.list();
+      const allSpools = await FilamentRepository.list();
 
-              // 3. LÓGICA DE LOTE (BATCH CHECK)
-              // Verifica se existem outros itens na fila com o mesmo batchId
-              const pendingSiblings = allItems.filter(
-                (p) =>
-                  p.batchId && // Tem lote
-                  p.batchId === item.batchId && // Mesmo lote
-                  p.id !== item.id && // Não é este item
-                  p.status !== "ready", // Ainda não finalizou
-              );
+      // ... lógica de consumo (copie do seu código original) ...
+      if (plateInfo) {
+        for (const f of plateInfo.filaments) {
+          const compatible = allSpools.filter(
+            (s) =>
+              s.material === f.material &&
+              s.color === f.color &&
+              (!f.brand || s.brand === f.brand),
+          );
+          if (compatible.length > 0)
+            await applyFilamentConsumption(compatible, f.grams);
+        }
+      } else if ((item as any).filaments) {
+        // ... legado ...
+        const legacy = (item as any).filaments;
+        for (const f of legacy) {
+          const compatible = allSpools.filter(
+            (s) =>
+              s.material === f.material &&
+              s.color === f.color &&
+              (!f.brand || s.brand === f.brand),
+          );
+          if (compatible.length > 0)
+            await applyFilamentConsumption(compatible, f.grams);
+        }
+      }
 
-              // Remove o item atual da fila (já foi impresso)
-              await ProductRepository.remove(item.id);
+      // ... lógica de lote e finalização ...
+      const pendingSiblings = allItems.filter(
+        (p) =>
+          p.batchId &&
+          p.batchId === item.batchId &&
+          p.id !== item.id &&
+          p.status !== "ready",
+      );
+      await ProductRepository.remove(item.id);
 
-              if (pendingSiblings.length > 0) {
-                // CASO A: Ainda faltam plates do mesmo lote.
-                // Apenas removemos este da fila e seguimos.
-                // Não cria estoque final ainda.
-              } else {
-                // CASO B: Não sobrou ninguém. O produto está completo!
-                // Cria o item final no estoque.
+      if (pendingSiblings.length === 0) {
+        const finishedProduct = {
+          ...item,
+          id: uid(),
+          status: "ready" as const,
+          quantity: 1,
+          finishedAt: new Date().toISOString(),
+          queuePosition: undefined,
+          activePlateIndex: undefined,
+          batchId: undefined,
+          estimatedMinutes: undefined,
+        };
+        await ProductRepository.upsert(finishedProduct);
+        // Alert de sucesso pode virar um Toast ou apenas fechar, mas ok manter Alert simples aqui ou remover
+      }
 
-                const finishedProduct = {
-                  ...item,
-                  id: uid(), // <--- AQUI ESTAVA O PROBLEMA (uid precisa ser importado)
-                  status: "ready" as const,
-                  quantity: 1, // 1 unidade pronta
-                  finishedAt: new Date().toISOString(),
-
-                  // Remove dados temporários da fila
-                  queuePosition: undefined,
-                  activePlateIndex: undefined,
-                  batchId: undefined,
-                  estimatedMinutes: undefined,
-                };
-
-                await ProductRepository.upsert(finishedProduct);
-                Alert.alert(
-                  "Sucesso",
-                  "Produto completo finalizado e adicionado ao estoque!",
-                );
-              }
-
-              // 4. Reorganiza a fila restante
-              const remaining = queue.filter((p) => p.id !== item.id);
-              await reindexQueue(remaining);
-
-              load();
-            } catch (e: any) {
-              Alert.alert("Erro", e.message);
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ],
-    );
+      const remaining = queue.filter((p) => p.id !== item.id);
+      await reindexQueue(remaining);
+      load();
+    } catch (e: any) {
+      console.error(e); // Troque alert por console ou toast se preferir
+    } finally {
+      setLoading(false);
+      setConfirmAction({ type: null, item: null });
+    }
   }
 
   if (loading) {
@@ -530,6 +502,28 @@ export function ProductQueueScreen() {
             </Text>
           </View>
         }
+      />
+
+      <ConfirmModal
+        visible={!!confirmAction.type}
+        title={
+          confirmAction.type === "finish"
+            ? "Finalizar Impressão"
+            : "Remover da Fila"
+        }
+        message={
+          confirmAction.type === "finish"
+            ? "Confirmar que a impressão foi concluída? O filamento será consumido."
+            : "Deseja realmente cancelar e remover este item da fila?"
+        }
+        confirmText={confirmAction.type === "finish" ? "Concluir" : "Remover"}
+        variant={confirmAction.type === "finish" ? "primary" : "danger"}
+        onConfirm={
+          confirmAction.type === "finish"
+            ? handleConfirmFinish
+            : handleConfirmRemove
+        }
+        onCancel={() => setConfirmAction({ type: null, item: null })}
       />
     </Screen>
   );

@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo, useRef } from "react";
+import React, { useCallback, useState, useMemo } from "react";
 import {
   FlatList,
   Pressable,
@@ -8,9 +8,9 @@ import {
   Modal,
   TextInput,
   Image,
-  Alert,
   ActivityIndicator,
   Animated,
+  Switch, // <--- NOVO IMPORT
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
@@ -18,7 +18,8 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   GestureHandlerRootView,
   Swipeable,
-} from "react-native-gesture-handler"; // IMPORTANTE
+  RectButton,
+} from "react-native-gesture-handler";
 
 import { Screen } from "../../ui/components/Screen";
 import { useTheme } from "../../ui/theme/ThemeContext";
@@ -30,6 +31,7 @@ import type { ProductsStackParamList } from "../../navigation/types";
 import { AppInput } from "../../ui/components/AppInput";
 import { AppButton } from "../../ui/components/AppButton";
 import { uid } from "../../core/utils/uuid";
+import { ConfirmModal } from "../../ui/components/ConfirmModal"; // <--- NOVO IMPORT
 
 type Nav = NativeStackNavigationProp<ProductsStackParamList>;
 
@@ -47,7 +49,16 @@ export function ProductsListScreen() {
   const [items, setItems] = useState<Product[]>([]);
   const [loadingAction, setLoadingAction] = useState(false);
 
-  // --- MODAIS ---
+  // --- MODAIS DE CONFIRMAÇÃO (CUSTOM) ---
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    item: Product | null;
+  }>({
+    open: false,
+    item: null,
+  });
+
+  // --- MODAIS FUNCIONAIS ---
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [queueTarget, setQueueTarget] = useState<Product | null>(null);
   const [queueQty, setQueueQty] = useState("1");
@@ -56,6 +67,9 @@ export function ProductsListScreen() {
   const [stockTarget, setStockTarget] = useState<Product | null>(null);
   const [stockQty, setStockQty] = useState("1");
   const [stockMode, setStockMode] = useState<"add" | "remove">("add");
+
+  // Controle do Switch de Filamento (para substituir o Alert de 3 opções)
+  const [updateFilamentStock, setUpdateFilamentStock] = useState(true);
 
   const [query, setQuery] = useState("");
 
@@ -129,25 +143,16 @@ export function ProductsListScreen() {
 
   // --- AÇÃO: DELETAR (Swipe) ---
   const handleDeleteProduct = (item: Product, swipeableRef: Swipeable) => {
-    Alert.alert(
-      "Excluir Produto",
-      `Deseja excluir "${item.name}" permanentemente?`,
-      [
-        {
-          text: "Cancelar",
-          style: "cancel",
-          onPress: () => swipeableRef.close(), // Fecha o swipe se cancelar
-        },
-        {
-          text: "Excluir",
-          style: "destructive",
-          onPress: async () => {
-            await ProductRepository.remove(item.id);
-            load();
-          },
-        },
-      ],
-    );
+    swipeableRef.close(); // Fecha visualmente o swipe
+    setConfirmDelete({ open: true, item }); // Abre o modal customizado
+  };
+
+  const executeDeleteProduct = async () => {
+    if (confirmDelete.item) {
+      await ProductRepository.remove(confirmDelete.item.id);
+      load();
+    }
+    setConfirmDelete({ open: false, item: null });
   };
 
   // --- AÇÕES: ESTOQUE (ADD/REMOVE) ---
@@ -155,57 +160,96 @@ export function ProductsListScreen() {
     setStockTarget(item);
     setStockMode(mode);
     setStockQty("1");
+    setUpdateFilamentStock(true); // Resetar para TRUE por padrão
     setStockModalOpen(true);
   }
 
   async function handleConfirmStockAction() {
-    if (!stockTarget) return;
-
-    const isAdd = stockMode === "add";
-    const title = isAdd ? "Baixa de Material" : "Devolução de Material";
-    const msg = isAdd
-      ? "Esses produtos foram impressos agora? Deseja descontar os filamentos do estoque?"
-      : "Deseja restabelecer o filamento ao estoque (desfazer impressão)?";
-
-    const confirmText = isAdd ? "Sim (Consumir)" : "Sim (Restabelecer)";
-    const cancelText = "Não (Apenas Ajuste)";
-
-    Alert.alert(title, msg, [
-      { text: cancelText, onPress: () => executeStockUpdate(false) },
-      { text: confirmText, onPress: () => executeStockUpdate(true) },
-      { text: "Cancelar", style: "cancel" },
-    ]);
+    // Executa diretamente usando o valor do Switch, sem Alerts bloqueantes
+    await executeStockUpdate(updateFilamentStock);
   }
 
   async function executeStockUpdate(affectFilament: boolean) {
     if (!stockTarget) return;
+
+    // IMPORTANTE:
+    // A lista de estoque nesta tela está AGRUPADA por nome (somando quantidades),
+    // porém o repositório pode ter múltiplos registros com o mesmo nome.
+    // Se atualizarmos apenas 1 registro, o agrupamento faz parecer “-1” ou “+1” errado.
+
+    // 1. CONVERSÃO DIRETA E SEGURA
+    // Troca vírgula por ponto e remove espaços
+    const rawText = stockQty.replace(",", ".").trim();
+    // Converte para número (se vazio, vira 0)
+    let inputQty = rawText ? parseFloat(rawText) : 0;
+
+    // Garante que é um número inteiro e positivo
+    inputQty = Math.abs(Math.trunc(inputQty));
+
+    if (inputQty === 0) {
+      alert("Por favor, digite uma quantidade válida maior que zero.");
+      return;
+    }
+
+    const isAdd = stockMode === "add";
+
+    // 1.1 RESOLVER O ESTOQUE REAL (DESAGRUPADO)
+    // Como a UI agrupa por nome, precisamos buscar todos os registros equivalentes
+    // no repositório e trabalhar em cima do TOTAL real.
+    const allProducts = await ProductRepository.list();
+    const groupKey = norm(stockTarget.name);
+    const groupItems = allProducts.filter(
+      (p) =>
+        (p.status === "ready" || p.status === undefined) &&
+        norm(p.name) === groupKey,
+    );
+
+    const currentQty = groupItems.reduce(
+      (acc, p) => acc + (p.quantity || 0),
+      0,
+    );
+
+    // Item “principal” que vamos manter após o merge (se existir)
+    const primaryItem: Product = groupItems[0] ?? (stockTarget as Product);
+
+    // 2. CÁLCULO PREVISÍVEL
+    let newQty = 0;
+    if (isAdd) {
+      newQty = currentQty + inputQty;
+    } else {
+      if (currentQty < inputQty) {
+        alert(`Erro: Você tem ${currentQty} e tentou remover ${inputQty}.`);
+        return;
+      }
+      newQty = currentQty - inputQty;
+    }
+
+    // --- ALERTA DE CONFERÊNCIA (Pode remover depois) ---
+    // Isso vai te mostrar a matemática exata que o sistema fez
+    const confirmMsg = isAdd
+      ? `Estoque Atual: ${currentQty}\nVai somar: +${inputQty}\nFinal: ${newQty}`
+      : `Estoque Atual: ${currentQty}\nVai remover: -${inputQty}\nFinal: ${newQty}`;
+
+    // Se o usuário cancelar no alerta nativo, aborta (opcional, apenas para debug agora)
+    // Vamos usar um confirm simples do navegador/nativo para você validar
+    /* OBS: Se estiver no celular, o alert não bloqueia execução do código abaixo
+       da mesma forma que no navegador, mas serve para você ver o valor.
+    */
+    // alert(confirmMsg);
+    // ----------------------------------------------------
+
     setLoadingAction(true);
 
     try {
-      const inputQty = Math.max(1, toInt(stockQty, 1));
-      const currentQty = stockTarget.quantity || 0;
-      const isAdd = stockMode === "add";
-
-      // Verifica saldo se for remoção
-      if (!isAdd && currentQty < inputQty) {
-        throw new Error("Quantidade insuficiente em estoque para remover.");
-      }
-
-      // 1. Atualiza Filamentos (Consumo ou Restabelecimento)
+      // 3. ATUALIZAÇÃO DE FILAMENTOS (Mantida a lógica do Switch)
       if (affectFilament) {
         const allSpools = await FilamentRepository.list();
 
-        // Função auxiliar para processar lista de filamentos
         const processFilaments = async (
           filaments: any[],
           multiplier: number,
         ) => {
           for (const f of filaments) {
-            // Se for ADD: Consome (+ grams). Se for REMOVE: Restabelece (- grams no consumo, ou seja, adiciona)
-            // Aqui vamos usar lógica direta:
-            // ADD -> applyFilamentConsumption (reduz do banco)
-            // REMOVE -> Aumenta manualmente no banco
-
             const totalGrams = f.grams * multiplier;
             const compatible = allSpools.filter(
               (s) =>
@@ -216,15 +260,13 @@ export function ProductsListScreen() {
 
             if (compatible.length > 0) {
               if (isAdd) {
-                // Consumir
+                // Entrada = Consumo (Gasta material)
                 await applyFilamentConsumption(compatible, totalGrams);
               } else {
-                // Restabelecer (Adicionar ao primeiro compatível)
-                // Como não temos histórico de qual rolo veio, devolvemos para o primeiro disponível (ou o que tem mais)
+                // Saída = Devolução (Se o switch estiver ativo)
                 const targetSpool = compatible[0];
                 const newWeight =
                   (targetSpool.weightCurrentG || 0) + totalGrams;
-                // Clampa para não ultrapassar o peso inicial se quiser ser estrito, mas por enquanto livre
                 await FilamentRepository.upsert({
                   ...targetSpool,
                   weightCurrentG: newWeight,
@@ -241,26 +283,35 @@ export function ProductsListScreen() {
             await processFilaments(plate.filaments, runs);
           }
         } else if ((stockTarget as any).filaments) {
-          // Legado
           await processFilaments((stockTarget as any).filaments, inputQty);
         }
       }
 
-      // 2. Atualiza Estoque do Produto
-      const newQty = isAdd ? currentQty + inputQty : currentQty - inputQty;
+      // 4. SALVAR O ESTOQUE CALCULADO (MERGE DO GRUPO)
+      // Atualiza o item principal com o total final e remove duplicados,
+      // garantindo que o agrupamento por nome fique consistente.
+      const nowISO = new Date().toISOString();
 
       await ProductRepository.upsert({
-        ...stockTarget,
+        ...primaryItem,
+        // Preferir foto do agrupado (às vezes o primary não tem)
+        photoUri: primaryItem.photoUri || stockTarget.photoUri,
         quantity: newQty,
-        updatedAt: new Date().toISOString(),
+        status: primaryItem.status ?? "ready",
+        updatedAt: nowISO,
       });
+
+      // Remove os duplicados do mesmo nome no estoque (mantém só 1 registro)
+      const dupes = groupItems.slice(1);
+      for (const d of dupes) {
+        await ProductRepository.remove(d.id);
+      }
 
       setStockModalOpen(false);
       setStockTarget(null);
-      Alert.alert("Sucesso", "Estoque atualizado!");
-      load();
+      load(); // Recarrega a lista
     } catch (e: any) {
-      Alert.alert("Erro", e.message);
+      alert(e.message);
     } finally {
       setLoadingAction(false);
     }
@@ -342,40 +393,43 @@ export function ProductsListScreen() {
 
   // --- COMPONENTES AUXILIARES SWIPE ---
   const renderRightActions = (
-  progress: Animated.AnimatedInterpolation<number>,
-  dragX: Animated.AnimatedInterpolation<number>,
-  item: Product,
-  ref: any
-) => {
-  // 1. Interpolação para o ícone crescer suavemente (Pop effect)
-  const scale = dragX.interpolate({
-    inputRange: [-80, -20],
-    outputRange: [1, 0.5], // Começa pequeno e cresce
-    extrapolate: 'clamp',
-  });
+    progress: Animated.AnimatedInterpolation<number>,
+    dragX: Animated.AnimatedInterpolation<number>,
+    item: Product,
+    ref: any,
+  ) => {
+    const scale = dragX.interpolate({
+      inputRange: [-80, -20],
+      outputRange: [1, 0.5],
+      extrapolate: "clamp",
+    });
 
-  // 2. Interpolação para a opacidade (aparece aos poucos)
-  const opacity = dragX.interpolate({
-    inputRange: [-80, -20],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
+    const opacity = dragX.interpolate({
+      inputRange: [-80, -20],
+      outputRange: [1, 0],
+      extrapolate: "clamp",
+    });
 
-  return (
-    <Pressable
-      onPress={() => handleDeleteProduct(item, ref)}
-      // AQUI: Largura fixa de 90px
-      style={{ width: 90 }} 
-    >
-      <View style={styles.deleteActionContainer}>
-        <Animated.View style={{ transform: [{ scale }], opacity, alignItems: 'center' }}>
-          <MaterialIcons name="delete-outline" size={28} color="#fff" />
-          <Text style={styles.deleteActionText}>Excluir</Text>
-        </Animated.View>
-      </View>
-    </Pressable>
-  );
-};
+    return (
+      <Pressable
+        onPress={() => handleDeleteProduct(item, ref)}
+        style={{ width: 90 }}
+      >
+        <View style={styles.deleteActionContainer}>
+          <Animated.View
+            style={{
+              transform: [{ scale }],
+              opacity,
+              alignItems: "center",
+            }}
+          >
+            <MaterialIcons name="delete-outline" size={28} color="#fff" />
+            <Text style={styles.deleteActionText}>Excluir</Text>
+          </Animated.View>
+        </View>
+      </Pressable>
+    );
+  };
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -476,81 +530,98 @@ export function ProductsListScreen() {
                   renderRightActions={(p, d) =>
                     renderRightActions(p, d, item, swipeableRow)
                   }
-                  overshootRight={false} // <--- ISSO TRAVA O ARRASTO (Não deixa passar do limite)
-                  friction={2} // <--- Deixa o arrasto um pouco mais "pesado/firme"
+                  overshootRight={false}
+                  friction={2}
                   containerStyle={{ overflow: "visible" }}
                 >
-                  <Pressable
-                    onPress={() =>
-                      navigation.navigate("ProductForm", { id: item.id })
-                    }
+                  {/* CONTAINER VISUAL DO CARD (Sem evento de clique aqui) */}
+                  <View
                     style={[
                       styles.card,
                       {
                         backgroundColor: colors.surface,
                         borderColor: colors.border,
+                        overflow: "hidden", // Garante que o RectButton respeite as bordas arredondadas
                       },
                     ]}
                   >
-                    {/* Header do Card */}
-                    <View style={styles.cardHeader}>
-                      <View
-                        style={[
-                          styles.thumb,
-                          { backgroundColor: colors.iconBg },
-                        ]}
-                      >
-                        {item.photoUri ? (
-                          <Image
-                            source={{ uri: item.photoUri }}
-                            style={{ width: "100%", height: "100%" }}
-                          />
-                        ) : (
-                          <MaterialIcons
-                            name="inventory-2"
-                            size={28}
-                            color={colors.textSecondary}
-                          />
-                        )}
-                      </View>
+                    {/* ÁREA 1: NAVEGAÇÃO (Apenas o topo é clicável para ir ao Form) */}
+                    <RectButton
+                      onPress={() =>
+                        navigation.navigate("ProductForm", { id: item.id })
+                      }
+                      style={{ width: "100%" }}
+                    >
+                      <View style={styles.cardHeader}>
+                        <View
+                          style={[
+                            styles.thumb,
+                            { backgroundColor: colors.iconBg },
+                          ]}
+                        >
+                          {item.photoUri ? (
+                            <Image
+                              source={{ uri: item.photoUri }}
+                              style={{ width: "100%", height: "100%" }}
+                            />
+                          ) : (
+                            <MaterialIcons
+                              name="inventory-2"
+                              size={28}
+                              color={colors.textSecondary}
+                            />
+                          )}
+                        </View>
 
-                      <View style={styles.cardInfo}>
-                        <Text
-                          style={[styles.title, { color: colors.textPrimary }]}
-                          numberOfLines={1}
-                        >
-                          {item.name}
-                        </Text>
-                        <Text
-                          style={[styles.sub, { color: colors.textSecondary }]}
-                        >
-                          {item.priceBRL ? `${toMoney(item.priceBRL)} • ` : ""}
-                          {infoLabel}
-                        </Text>
-                      </View>
+                        <View style={styles.cardInfo}>
+                          <Text
+                            style={[
+                              styles.title,
+                              { color: colors.textPrimary },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {item.name}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.sub,
+                              { color: colors.textSecondary },
+                            ]}
+                          >
+                            {item.priceBRL
+                              ? `${toMoney(item.priceBRL)} • `
+                              : ""}
+                            {infoLabel}
+                          </Text>
+                        </View>
 
-                      <View
-                        style={[
-                          styles.badgeBig,
-                          { backgroundColor: colors.iconBg },
-                        ]}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 16,
-                            fontWeight: "800",
-                            color: colors.primary,
-                          }}
+                        <View
+                          style={[
+                            styles.badgeBig,
+                            { backgroundColor: colors.iconBg },
+                          ]}
                         >
-                          {item.quantity ?? 0}
-                        </Text>
-                        <Text
-                          style={{ fontSize: 10, color: colors.textSecondary }}
-                        >
-                          un
-                        </Text>
+                          <Text
+                            style={{
+                              fontSize: 16,
+                              fontWeight: "800",
+                              color: colors.primary,
+                            }}
+                          >
+                            {item.quantity ?? 0}
+                          </Text>
+                          <Text
+                            style={{
+                              fontSize: 10,
+                              color: colors.textSecondary,
+                            }}
+                          >
+                            un
+                          </Text>
+                        </View>
                       </View>
-                    </View>
+                    </RectButton>
 
                     <View
                       style={[
@@ -559,7 +630,7 @@ export function ProductsListScreen() {
                       ]}
                     />
 
-                    {/* Barra de Ações (Agora apenas 3 botões limpos) */}
+                    {/* ÁREA 2: AÇÕES (Separada da navegação - Cliques independentes) */}
                     <View style={styles.actionBar}>
                       <Pressable
                         onPress={() => {
@@ -620,7 +691,7 @@ export function ProductsListScreen() {
                         </Text>
                       </Pressable>
                     </View>
-                  </Pressable>
+                  </View>
                 </Swipeable>
               );
             }}
@@ -646,134 +717,209 @@ export function ProductsListScreen() {
           </Pressable>
 
           {/* MODAL: FILA */}
-        <Modal
-          visible={queueModalOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setQueueModalOpen(false)}
-        >
-          <Pressable
-            style={[
-              styles.modalBackdrop,
-              { backgroundColor: "rgba(0,0,0,0.45)" },
-            ]}
-            onPress={() => setQueueModalOpen(false)}
+          <Modal
+            visible={queueModalOpen}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setQueueModalOpen(false)}
           >
-            <View
+            <Pressable
               style={[
-                styles.modalCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
+                styles.modalBackdrop,
+                { backgroundColor: "rgba(0,0,0,0.45)" },
               ]}
+              onPress={() => setQueueModalOpen(false)}
             >
-              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
-                Produzir (Fila)
-              </Text>
-              <Text
-                style={{
-                  color: colors.textSecondary,
-                  fontWeight: "800",
-                  marginBottom: 4,
-                }}
+              {/* CORREÇÃO AQUI: Trocamos View por Pressable com stopPropagation */}
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
+                style={[
+                  styles.modalCard,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
               >
-                {queueTarget?.name}
-              </Text>
-              <Text
-                style={{
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  marginBottom: 16,
-                }}
-              >
-                Tempo Total Unitário: {calculatedTotalTime.toFixed(0)} min
-              </Text>
-
-              <View style={{ gap: 12 }}>
-                <AppInput
-                  label="Quantidade a Produzir"
-                  value={queueQty}
-                  onChangeText={setQueueQty}
-                  keyboardType="numeric"
-                  placeholder="1"
-                />
-                <AppButton
-                  title="Adicionar à Fila"
-                  onPress={handleAddToQueue}
-                />
-              </View>
-            </View>
-          </Pressable>
-        </Modal>
-
-        {/* MODAL: ESTOQUE RÁPIDO (ADD/REMOVE) */}
-        <Modal
-          visible={stockModalOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setStockModalOpen(false)}
-        >
-          <Pressable
-            style={[
-              styles.modalBackdrop,
-              { backgroundColor: "rgba(0,0,0,0.45)" },
-            ]}
-            onPress={() => setStockModalOpen(false)}
-          >
-            <View
-              style={[
-                styles.modalCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
-                {stockMode === "add"
-                  ? "Entrada de Estoque"
-                  : "Saída de Estoque"}
-              </Text>
-              <Text
-                style={{
-                  color: colors.textSecondary,
-                  fontWeight: "800",
-                  marginBottom: 4,
-                }}
-              >
-                {stockTarget?.name}
-              </Text>
-              <Text
-                style={{
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  marginBottom: 16,
-                }}
-              >
-                {stockMode === "add"
-                  ? "Adicionar produtos que já estão prontos."
-                  : "Remover produtos (vendas, perdas, etc)."}
-              </Text>
-
-              <View style={{ gap: 12 }}>
-                <AppInput
-                  label="Quantidade"
-                  value={stockQty}
-                  onChangeText={setStockQty}
-                  keyboardType="numeric"
-                  placeholder="1"
-                />
-                <AppButton
-                  title={
-                    stockMode === "add"
-                      ? "Confirmar Entrada"
-                      : "Confirmar Saída"
-                  }
-                  onPress={handleConfirmStockAction}
+                <Text
+                  style={[styles.modalTitle, { color: colors.textPrimary }]}
+                >
+                  Produzir (Fila)
+                </Text>
+                <Text
                   style={{
-                    backgroundColor:
-                      stockMode === "add" ? colors.success : "#f97316",
+                    color: colors.textSecondary,
+                    fontWeight: "800",
+                    marginBottom: 4,
                   }}
-                />
-              </View>
-            </View>
-          </Pressable>
-        </Modal>
+                >
+                  {queueTarget?.name}
+                </Text>
+                <Text
+                  style={{
+                    color: colors.textSecondary,
+                    fontSize: 13,
+                    marginBottom: 16,
+                  }}
+                >
+                  Tempo Total Unitário: {calculatedTotalTime.toFixed(0)} min
+                </Text>
+
+                <View style={{ gap: 12 }}>
+                  <AppInput
+                    label="Quantidade a Produzir"
+                    value={queueQty}
+                    onChangeText={setQueueQty}
+                    keyboardType="numeric"
+                    placeholder="1"
+                  />
+                  <AppButton
+                    title="Adicionar à Fila"
+                    onPress={handleAddToQueue}
+                  />
+                </View>
+              </Pressable>
+            </Pressable>
+          </Modal>
+
+          {/* MODAL: ESTOQUE RÁPIDO (COM SWITCH) */}
+          <Modal
+            visible={stockModalOpen}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setStockModalOpen(false)}
+          >
+            <Pressable
+              style={[
+                styles.modalBackdrop,
+                { backgroundColor: "rgba(0,0,0,0.45)" },
+              ]}
+              onPress={() => setStockModalOpen(false)}
+            >
+              {/* CORREÇÃO AQUI: Trocamos View por Pressable com stopPropagation */}
+              <Pressable
+                onPress={(e) => e.stopPropagation()}
+                style={[
+                  styles.modalCard,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[styles.modalTitle, { color: colors.textPrimary }]}
+                >
+                  {stockMode === "add"
+                    ? "Entrada de Estoque"
+                    : "Saída de Estoque"}
+                </Text>
+                <Text
+                  style={{
+                    color: colors.textSecondary,
+                    fontWeight: "800",
+                    marginBottom: 4,
+                  }}
+                >
+                  {stockTarget?.name}
+                </Text>
+                <Text
+                  style={{
+                    color: colors.textSecondary,
+                    fontSize: 13,
+                    marginBottom: 16,
+                  }}
+                >
+                  {stockMode === "add"
+                    ? "Adicionar produtos que já estão prontos."
+                    : "Remover produtos (vendas, perdas, etc)."}
+                </Text>
+
+                <View style={{ gap: 12 }}>
+                  <AppInput
+                    label="Quantidade"
+                    value={stockQty}
+                    onChangeText={setStockQty}
+                    keyboardType="numeric"
+                    placeholder="1"
+                  />
+
+                  {/* CONTROLE DE FILAMENTO COM SWITCH */}
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      paddingVertical: 4,
+                      backgroundColor: colors.iconBg,
+                      padding: 12,
+                      borderRadius: 12,
+                    }}
+                  >
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text
+                        style={{
+                          fontWeight: "bold",
+                          color: colors.textPrimary,
+                          fontSize: 14,
+                        }}
+                      >
+                        {stockMode === "add"
+                          ? "Descontar Filamento?"
+                          : "Devolver Filamento?"}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          color: colors.textSecondary,
+                          marginTop: 2,
+                        }}
+                      >
+                        {stockMode === "add"
+                          ? "Reduz do estoque de carretéis."
+                          : "Adiciona de volta aos carretéis."}
+                      </Text>
+                    </View>
+                    <Switch
+                      value={updateFilamentStock}
+                      onValueChange={setUpdateFilamentStock}
+                      trackColor={{
+                        false: colors.border,
+                        true: colors.primary,
+                      }}
+                      thumbColor={"#fff"}
+                    />
+                  </View>
+
+                  <AppButton
+                    title={
+                      stockMode === "add"
+                        ? "Confirmar Entrada"
+                        : "Confirmar Saída"
+                    }
+                    onPress={handleConfirmStockAction}
+                    style={{
+                      backgroundColor:
+                        stockMode === "add" ? colors.success : "#f97316",
+                      marginTop: 4,
+                    }}
+                  />
+                </View>
+              </Pressable>
+            </Pressable>
+          </Modal>
+
+          {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO (NOVO) */}
+          <ConfirmModal
+            visible={confirmDelete.open}
+            title="Excluir Produto"
+            message={`Deseja excluir "${confirmDelete.item?.name}" permanentemente?`}
+            confirmText="Excluir"
+            cancelText="Cancelar"
+            variant="danger"
+            onConfirm={executeDeleteProduct}
+            onCancel={() => setConfirmDelete({ open: false, item: null })}
+          />
         </View>
       </Screen>
     </GestureHandlerRootView>
@@ -783,7 +929,6 @@ export function ProductsListScreen() {
 const styles = StyleSheet.create({
   page: { flex: 1 },
   headerDashboard: { padding: 16, borderBottomWidth: 1, gap: 12 },
-  pageTitle: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
   statsRow: { flexDirection: "row", gap: 12 },
   statCard: {
     flex: 1,
@@ -815,7 +960,7 @@ const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
     borderRadius: 16,
-    backgroundColor: 'white',
+    backgroundColor: "white",
   },
   cardHeader: {
     flexDirection: "row",
@@ -864,22 +1009,22 @@ const styles = StyleSheet.create({
   actionText: { fontSize: 12, fontWeight: "700" },
 
   // --- SWIPE DELETE ACTION ---
- deleteActionContainer: {
+  deleteActionContainer: {
     flex: 1,
-    backgroundColor: '#ef4444',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: "#ef4444",
+    justifyContent: "center",
+    alignItems: "center",
     // O SEGREDO DO "CORTE": Arredondar SÓ o lado direito igual ao card
     borderTopRightRadius: 16,
     borderBottomRightRadius: 16,
     // Um pequeno ajuste visual para não colar na borda esquerda do card enquanto arrasta
-    marginLeft: -10, 
+    marginLeft: -10,
     paddingLeft: 10,
   },
-  
+
   deleteActionText: {
-    color: 'white',
-    fontWeight: '700',
+    color: "white",
+    fontWeight: "700",
     fontSize: 10, // Texto menor para ficar mais elegante
     marginTop: 2,
   },
@@ -898,7 +1043,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
   },
-  modalBackdrop: { flex: 1, justifyContent: "center", padding: 16 },
-  modalCard: { borderWidth: 1, borderRadius: 24, padding: 24, elevation: 10 },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderWidth: 1,
+    borderRadius: 24,
+    padding: 24,
+    elevation: 10,
+  },
   modalTitle: { fontSize: 20, fontWeight: "800", marginBottom: 12 },
 });

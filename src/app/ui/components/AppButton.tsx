@@ -1,5 +1,12 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, ViewStyle } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  ViewStyle,
+  ActivityIndicator,
+} from "react-native";
+import { useTheme } from "../theme/ThemeContext"; // Importar o hook do tema
 
 type Props = {
   title: string;
@@ -7,6 +14,7 @@ type Props = {
   variant?: "primary" | "danger" | "ghost";
   style?: ViewStyle;
   disabled?: boolean;
+  loading?: boolean;
 };
 
 export function AppButton({
@@ -15,29 +23,49 @@ export function AppButton({
   variant = "primary",
   style,
   disabled,
+  loading,
 }: Props) {
+  const { colors } = useTheme(); // Pegando as cores atuais
+
+  // Definindo estilos dinâmicos baseados no tema
+  const getBackgroundColor = () => {
+    if (disabled) return colors.border; // Cor desabilitada
+    if (variant === "primary") return colors.primary;
+    if (variant === "danger") return colors.danger;
+    return "transparent"; // ghost
+  };
+
+  const getTextColor = () => {
+    if (disabled) return colors.textSecondary;
+    if (variant === "ghost") return colors.textPrimary;
+    return colors.textOnPrimary; // Texto do botão primário/danger
+  };
+
+  const getBorderColor = () => {
+    if (variant === "ghost") return colors.border;
+    return "transparent";
+  };
+
   return (
     <Pressable
       onPress={onPress}
-      disabled={disabled}
-      style={[
+      disabled={disabled || loading}
+      style={({ pressed }) => [
         styles.base,
-        variant === "primary" && styles.primary,
-        variant === "danger" && styles.danger,
-        variant === "ghost" && styles.ghost,
-        disabled && styles.disabled,
+        {
+          backgroundColor: getBackgroundColor(),
+          borderColor: getBorderColor(),
+          borderWidth: variant === "ghost" ? 1 : 0,
+          opacity: pressed ? 0.8 : 1, // Feedback visual de clique
+        },
         style,
       ]}
     >
-      <Text
-        style={[
-          styles.text,
-          variant === "ghost" ? styles.textGhost : styles.textSolid,
-          disabled && styles.textDisabled,
-        ]}
-      >
-        {title}
-      </Text>
+      {loading ? (
+        <ActivityIndicator color={getTextColor()} />
+      ) : (
+        <Text style={[styles.text, { color: getTextColor() }]}>{title}</Text>
+      )}
     </Pressable>
   );
 }
@@ -48,18 +76,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
     alignItems: "center",
+    justifyContent: "center",
+    minHeight: 48,
   },
-  primary: { backgroundColor: "#111" },
-  danger: { backgroundColor: "#b00020" },
-  ghost: {
-    backgroundColor: "transparent",
-    borderWidth: 1,
-    borderColor: "#ddd",
+  text: {
+    fontSize: 16,
+    fontWeight: "700",
   },
-  disabled: { opacity: 0.6 },
-
-  text: { fontSize: 16, fontWeight: "700" },
-  textSolid: { color: "#fff" },
-  textGhost: { color: "#111" },
-  textDisabled: { color: "#fff" },
 });
