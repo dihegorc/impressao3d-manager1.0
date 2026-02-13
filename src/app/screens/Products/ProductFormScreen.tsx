@@ -17,6 +17,7 @@ import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
+import * as DocumentPicker from "expo-document-picker";
 
 import type { ProductsStackParamList } from "../../navigation/types";
 import { Screen } from "../../ui/components/Screen";
@@ -95,6 +96,9 @@ export function ProductFormScreen() {
   const [photoUri, setPhotoUri] = useState<string | undefined>(undefined);
 
   const [plates, setPlates] = useState<PrintPlate[]>([]);
+  const [platePreviews, setPlatePreviews] = useState<Record<string, string>>(
+    {},
+  );
   const [accessories, setAccessories] = useState<ProductAccessory[]>([]);
   const [plateToDelete, setPlateToDelete] = useState<number | null>(null);
 
@@ -388,6 +392,143 @@ export function ProductFormScreen() {
       },
     ]);
   }
+
+  // Função auxiliar para ler arquivos tanto no Mobile quanto na Web
+  async function readFileContent(uri: string): Promise<string> {
+    if (Platform.OS === "web") {
+      // Na Web, o URI é um blob, lemos via fetch
+      const response = await fetch(uri);
+      return await response.text();
+    } else {
+      // No Mobile (Android/iOS), usamos o FileSystem
+      return await FileSystem.readAsStringAsync(uri);
+    }
+  }
+
+  async function importGcodesBatch() {
+    try {
+      const allFilesType = "*/*"; // Na web é melhor deixar genérico para garantir que o navegador aceite
+
+      const res: any = await DocumentPicker.getDocumentAsync({
+        multiple: true,
+        copyToCacheDirectory: true,
+        type: allFilesType,
+      });
+
+      if (res.canceled) return;
+
+      // Normalização dos assets (Web vs Mobile)
+      const assets = res.assets ? res.assets : [res];
+
+      if (!assets || assets.length === 0) {
+        return Alert.alert("Importar", "Nenhum arquivo selecionado.");
+      }
+
+      // Filtragem de extensão (flexível para evitar erros na web se o mime type vier estranho)
+      const gcodeAssets = assets.filter((a: any) => {
+        const name = a.name ? a.name.toLowerCase() : "";
+        return name.endsWith(".gcode") || name.endsWith(".gco");
+      });
+
+      if (gcodeAssets.length === 0) {
+        return Alert.alert(
+          "Erro de Formato",
+          "Selecione arquivos com extensão .gcode ou .gco.",
+        );
+      }
+
+      setSaving(true); // Bloqueia UI enquanto processa (opcional, mas recomendado)
+
+      const importedPlates: PrintPlate[] = [];
+      const previewUpdates: Record<string, string> = {};
+
+      // Verifica se devemos substituir a "Mesa 1" vazia inicial
+      const shouldReplace =
+        plates.length === 1 &&
+        plates[0].estimatedMinutes === 0 &&
+        (plates[0].filaments?.length ?? 0) === 0;
+
+      const defaultSpool = allSpools?.[0];
+
+      // Loop de processamento
+      for (let i = 0; i < gcodeAssets.length; i++) {
+        const a = gcodeAssets[i];
+        const uri: string = a.uri;
+        const name: string = a.name ?? `Mesa Importada ${i + 1}`;
+
+        try {
+          // --- AQUI ESTÁ A CORREÇÃO PRINCIPAL ---
+          const content = await readFileContent(uri);
+          // --------------------------------------
+
+          const minutes = parseGcodeTimeMinutes(content);
+          const grams = parseGcodeWeightGrams(content, 1.75, 1.24);
+          const finfo = parseBambuFilamentInfo(content);
+          const thumb = extractGcodeThumbnailDataUri(content); // Miniatura (se houver)
+
+          const plateId = uid();
+
+          // Tenta inferir material/cor do G-code ou usa o padrão do banco
+          const material = finfo.material || defaultSpool?.material || "PLA";
+          const brand = finfo.brand || defaultSpool?.brand || "";
+          const color = finfo.colorHex || defaultSpool?.color || "";
+
+          const filaments: ProductFilament[] = [];
+
+          // Só adiciona filamento se detectou peso maior que 0
+          if (grams > 0) {
+            filaments.push({
+              filamentId: defaultSpool?.id, // Pode ficar undefined se não bater
+              material,
+              color,
+              brand,
+              grams: Math.round(grams * 100) / 100, // Arredonda 2 casas
+            } as any);
+          }
+
+          importedPlates.push({
+            id: plateId,
+            name: name.replace(/\.(gcode|gco)$/i, ""),
+            estimatedMinutes: Math.round(minutes),
+            unitsOnPlate: 1, // Padrão 1, será ajustado pelo Yield global ao salvar
+            filaments,
+          });
+
+          if (thumb?.dataUri) {
+            previewUpdates[plateId] = thumb.dataUri;
+          }
+        } catch (err) {
+          console.error(`Erro ao ler arquivo ${name}:`, err);
+          // Não para o loop, tenta o próximo arquivo
+        }
+      }
+
+      setSaving(false);
+
+      if (importedPlates.length === 0) {
+        return Alert.alert(
+          "Erro",
+          "Não foi possível ler os dados dos arquivos G-code.",
+        );
+      }
+
+      // Atualiza estados
+      setPlatePreviews((prev) => ({ ...prev, ...previewUpdates }));
+
+      if (shouldReplace) {
+        setPlates(importedPlates);
+      } else {
+        setPlates((prev) => [...prev, ...importedPlates]);
+      }
+
+      Alert.alert("Sucesso", `${importedPlates.length} mesa(s) importada(s).`);
+    } catch (e: any) {
+      setSaving(false);
+      console.error("Erro geral no import:", e);
+      Alert.alert("Erro", e.message || "Falha na importação.");
+    }
+  }
+
   function removePlate(index: number) {
     setPlateToDelete(index); // Abre o ConfirmModal
   }
@@ -803,11 +944,18 @@ export function ProductFormScreen() {
               <Text style={[styles.h2, { color: colors.textPrimary }]}>
                 Mesas de Impressão (Plates)
               </Text>
-              <AppButton
-                title="+ Mesa"
-                onPress={addPlate}
-                style={{ height: 36, paddingHorizontal: 12 }}
-              />
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <AppButton
+                  title="Importar G-code"
+                  onPress={importGcodesBatch}
+                  style={{ height: 36, paddingHorizontal: 12 }}
+                />
+                <AppButton
+                  title="+ Mesa"
+                  onPress={addPlate}
+                  style={{ height: 36, paddingHorizontal: 12 }}
+                />
+              </View>
             </View>
 
             {plates.map((plate, idx) => {
@@ -826,36 +974,67 @@ export function ProductFormScreen() {
                   ]}
                 >
                   <View
-                    style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}
+                    style={{
+                      flexDirection: "row",
+                      gap: 12,
+                      marginBottom: 10,
+                      alignItems: "flex-start",
+                    }}
                   >
-                    <View style={{ flex: 2 }}>
-                      <AppInput
-                        label="Nome da Mesa"
-                        value={plate.name}
-                        onChangeText={(v) => updatePlateName(idx, v)}
-                        placeholder="Ex: Corpo"
-                      />
+                    <View
+                      style={[
+                        styles.platePreviewBox,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.iconBg,
+                        },
+                      ]}
+                    >
+                      {platePreviews[plate.id] ? (
+                        <Image
+                          source={{ uri: platePreviews[plate.id] }}
+                          style={{ width: "100%", height: "100%" }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <MaterialIcons
+                          name="image"
+                          size={28}
+                          color={colors.textSecondary}
+                        />
+                      )}
                     </View>
 
-                    {/* Input HH:MM */}
-                    <View style={{ flexDirection: "row", flex: 1.5, gap: 4 }}>
-                      <View style={{ flex: 1 }}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flex: 2 }}>
                         <AppInput
-                          label="H"
-                          value={h > 0 ? String(h) : ""}
-                          onChangeText={(v) => updatePlateTime(idx, "h", v)}
-                          keyboardType="numeric"
-                          placeholder="0"
+                          label="Nome da Mesa"
+                          value={plate.name}
+                          onChangeText={(v) => updatePlateName(idx, v)}
+                          placeholder="Ex: Corpo"
                         />
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <AppInput
-                          label="Min"
-                          value={m > 0 ? String(m) : ""}
-                          onChangeText={(v) => updatePlateTime(idx, "m", v)}
-                          keyboardType="numeric"
-                          placeholder="0"
-                        />
+
+                      {/* Input HH:MM */}
+                      <View style={{ flexDirection: "row", flex: 1.5, gap: 4 }}>
+                        <View style={{ flex: 1 }}>
+                          <AppInput
+                            label="H"
+                            value={h > 0 ? String(h) : ""}
+                            onChangeText={(v) => updatePlateTime(idx, "h", v)}
+                            keyboardType="numeric"
+                            placeholder="0"
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <AppInput
+                            label="Min"
+                            value={m > 0 ? String(m) : ""}
+                            onChangeText={(v) => updatePlateTime(idx, "m", v)}
+                            keyboardType="numeric"
+                            placeholder="0"
+                          />
+                        </View>
                       </View>
                     </View>
                   </View>
@@ -1165,6 +1344,219 @@ export function ProductFormScreen() {
   );
 }
 
+// --- G-CODE PARSER (Bambu/Orca/Prusa/Cura) ---
+function parseGcodeTimeMinutes(content: string): number {
+  // 1) Cura: ;TIME:12345 (segundos)
+  const timeSecondsMatch = content.match(/;TIME:(\d+)/i);
+  if (timeSecondsMatch) return Number(timeSecondsMatch[1]) / 60;
+
+  // 2) Bambu/Orca/Prusa: ; estimated printing time (normal mode) = 54m 26s
+  // ou: ; estimated printing time = 1h 2m 3s
+  const estLine = content.match(/;\s*estimated\s*printing\s*time.*=\s*(.+)$/im);
+  if (estLine?.[1]) {
+    const t = estLine[1];
+    let minutes = 0;
+    const h = t.match(/(\d+)\s*h/i);
+    const m = t.match(/(\d+)\s*m/i);
+    const s = t.match(/(\d+)\s*s/i);
+    if (h) minutes += Number(h[1]) * 60;
+    if (m) minutes += Number(m[1]);
+    if (s) minutes += Number(s[1]) / 60;
+    if (minutes > 0) return minutes;
+  }
+
+  // 3) Prusa/Orca/Bambu: ; total estimated time = ...
+  const timeStringMatch = content.match(
+    /;.*(?:estimated|model|total)\s*printing\s*time\s*=\s*(.*)/i,
+  );
+  if (timeStringMatch?.[1]) {
+    const t = timeStringMatch[1];
+    let minutes = 0;
+    const h = t.match(/(\d+)\s*h/i);
+    const m = t.match(/(\d+)\s*m/i);
+    const s = t.match(/(\d+)\s*s/i);
+    if (h) minutes += Number(h[1]) * 60;
+    if (m) minutes += Number(m[1]);
+    if (s) minutes += Number(s[1]) / 60;
+    if (minutes > 0) return minutes;
+  }
+
+  // 4) Simplify3D: ; Build time: 1 hours 20 minutes
+  const buildTimeMatch = content.match(/;.*Build time:\s*(.*)/i);
+  if (buildTimeMatch?.[1]) {
+    const t = buildTimeMatch[1];
+    let minutes = 0;
+    const h = t.match(/(\d+)\s*hour/i);
+    const m = t.match(/(\d+)\s*minute/i);
+    if (h) minutes += Number(h[1]) * 60;
+    if (m) minutes += Number(m[1]);
+    if (minutes > 0) return minutes;
+  }
+
+  return 0;
+}
+
+function parseGcodeWeightGrams(
+  content: string,
+  filamentDiameter = 1.75,
+  filamentDensity = 1.24,
+): number {
+  const calculateWeightFromLengthMm = (lengthMm: number) => {
+    const radius = filamentDiameter / 2;
+    const areaMm2 = Math.PI * Math.pow(radius, 2);
+    const volumeCm3 = (areaMm2 * lengthMm) / 1000; // mm³ -> cm³
+    return volumeCm3 * filamentDensity;
+  };
+
+  // Bambu header: ; total filament weight [g] : 18.93
+  const bambuWeight = content.match(
+    /;\s*total\s*filament\s*weight\s*\[g\]\s*:\s*([\d.]+)/i,
+  );
+  if (bambuWeight) return Number(bambuWeight[1]);
+
+  // Prusa/Orca/Bambu: ; filament used [g] = 12.3  OR total filament used [g] =
+  const weightMatch = content.match(
+    /;.*(?:total\s*)?filament\s*used\s*\[g\]\s*[=:]\s*([\d.]+)/i,
+  );
+  if (weightMatch) return Number(weightMatch[1]);
+
+  // Genérico: ; weight = 12.34 g
+  const genericWeightMatch = content.match(
+    /;.*(?:total\s*)?weight\s*=\s*([\d.]+)\s*g/i,
+  );
+  if (genericWeightMatch) return Number(genericWeightMatch[1]);
+
+  // Cura (metros): ;Filament used: 1.23m
+  const lengthMatchM = content.match(/;.*Filament used:\s*([\d.]+)m/i);
+  if (lengthMatchM)
+    return calculateWeightFromLengthMm(Number(lengthMatchM[1]) * 1000);
+
+  // Prusa/Orca (mm): ; filament used [mm] = 1234.5
+  const lengthMatchMm = content.match(
+    /;.*filament used\s*\[mm\]\s*=\s*([\d.]+)/i,
+  );
+  if (lengthMatchMm)
+    return calculateWeightFromLengthMm(Number(lengthMatchMm[1]));
+
+  // Bambu length mm: ; total filament length [mm] : 6398.64
+  const bambuLen = content.match(
+    /;\s*total\s*filament\s*length\s*\[mm\]\s*:\s*([\d.]+)/i,
+  );
+  if (bambuLen) return calculateWeightFromLengthMm(Number(bambuLen[1]));
+
+  return 0;
+}
+
+function parseBambuFilamentInfo(content: string): {
+  material?: string;
+  brand?: string;
+  colorHex?: string;
+  activeIndex: number;
+} {
+  // Ex:
+  // ; filament_type = PLA;PLA;PLA;PLA
+  // ; filament_vendor = SUNLU;Generic;Generic;Polymaker
+  // ; filament_colour = #F72323;#BCBCBC;#7C4B00;#898989
+  // ; filament: 1
+  const activeMatch = content.match(/^\s*;\s*filament\s*:\s*(\d+)/im);
+  const activeRaw = activeMatch ? Number(activeMatch[1]) : 1;
+  const activeIndex = Math.max(
+    0,
+    (Number.isFinite(activeRaw) ? activeRaw : 1) - 1,
+  );
+
+  const typesLine =
+    content.match(/^\s*;\s*filament_type\s*=\s*(.+)$/im)?.[1] ?? "";
+  const vendorLine =
+    content.match(/^\s*;\s*filament_vendor\s*=\s*(.+)$/im)?.[1] ?? "";
+  const colorLine =
+    content.match(/^\s*;\s*filament_colou?r\s*=\s*(.+)$/im)?.[1] ?? "";
+
+  const types = typesLine
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const vendors = vendorLine
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const colors = colorLine
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const material = types[activeIndex] ?? types[0];
+  const brand = vendors[activeIndex] ?? vendors[0];
+  const colorHex = colors[activeIndex] ?? colors[0];
+
+  return { material, brand, colorHex, activeIndex };
+}
+
+// Extrai thumbnail embutida no G-code (Bambu/Orca/Prusa). Retorna a maior encontrada (data URI).
+function extractGcodeThumbnailDataUri(
+  content: string,
+): { dataUri: string; width: number; height: number } | null {
+  const lines = content.split(/\r?\n/);
+
+  const beginRe =
+    /^\s*;\s*thumbnail(?:_JPG|_PNG)?\s+begin\s+(\d+)\s*x\s*(\d+)/i;
+  const endRe = /^\s*;\s*thumbnail(?:_JPG|_PNG)?\s+end/i;
+
+  const blocks: Array<{ w: number; h: number; mime: string; b64: string }> = [];
+  let collecting = false;
+  let cur: { w: number; h: number; mime: string; b64: string } | null = null;
+
+  for (const line of lines) {
+    const begin = line.match(beginRe);
+    if (begin) {
+      collecting = true;
+      cur = {
+        w: Number(begin[1]),
+        h: Number(begin[2]),
+        mime: /thumbnail_jpg/i.test(line) ? "image/jpeg" : "image/png",
+        b64: "",
+      };
+      continue;
+    }
+    if (collecting && endRe.test(line)) {
+      collecting = false;
+      if (cur && cur.b64.length > 0) blocks.push(cur);
+      cur = null;
+      continue;
+    }
+    if (collecting && cur) {
+      const cleaned = line.replace(/^\s*;\s?/, "").trim();
+      if (cleaned) cur.b64 += cleaned;
+    }
+  }
+
+  if (blocks.length === 0) return null;
+  blocks.sort((a, b) => b.w * b.h - a.w * a.h);
+  const best = blocks[0];
+
+  // valida base64 minimamente
+  if (!/^[A-Za-z0-9+/=]+$/.test(best.b64)) return null;
+
+  return {
+    dataUri: `data:${best.mime};base64,${best.b64}`,
+    width: best.w,
+    height: best.h,
+  };
+}
+
+function getRelevantHeaderLines(content: string, limit = 80): string[] {
+  // para debug: pega só as linhas do começo que costumam trazer metadata
+  const lines = content.split(/\r?\n/).slice(0, 700);
+  const out: string[] = [];
+  const keep =
+    /(estimated printing time|TIME:|filament_(type|vendor|colou?r)|total filament|filament used|thumbnail|filament:)/i;
+  for (const l of lines) {
+    if (keep.test(l)) out.push(l);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 const styles = StyleSheet.create({
   h1: { fontSize: 18, fontWeight: "900" },
   h2: { fontSize: 15, fontWeight: "900" },
@@ -1202,6 +1594,15 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 12,
     marginBottom: 12,
+  },
+  platePreviewBox: {
+    width: 86,
+    height: 86,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   calcCard: {
     borderWidth: 2,
